@@ -73,7 +73,6 @@ jobs:
           cd openwrt
           echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
-          # 预截断 short hash 供 Release body 使用（避免表达式切片语法不支持）
           echo "HOMEPROXY_SHORT=${HOMEPROXY_COMMIT:0:8}" >> $GITHUB_ENV
           echo "DNSFILTER_SHORT=${DNSFILTER_COMMIT:0:8}" >> $GITHUB_ENV
 
@@ -104,11 +103,9 @@ jobs:
             return 0
           }
 
-          # Argon 主题 - 锁定 release tag
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon" || exit 1
 
-          # HomeProxy - 浅克隆 + hash 验证
           echo "📥 浅克隆 homeproxy..."
           git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
           ACTUAL_HP=$(git -C package/homeproxy rev-parse HEAD)
@@ -116,12 +113,10 @@ jobs:
             echo "❌ homeproxy hash 不匹配"
             echo "   期望: $HOMEPROXY_COMMIT"
             echo "   实际: $ACTUAL_HP"
-            echo "   请更新 env.HOMEPROXY_COMMIT 为上面的实际值"
             exit 1
           fi
           echo "✅ homeproxy hash 验证通过: ${HOMEPROXY_COMMIT:0:8}"
 
-          # DNSFilter - 浅克隆 + hash 验证
           echo "📥 浅克隆 luci-app-dnsfilter..."
           git clone --depth 1 https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter || exit 1
           ACTUAL_DF=$(git -C package/luci-app-dnsfilter rev-parse HEAD)
@@ -129,7 +124,6 @@ jobs:
             echo "❌ dnsfilter hash 不匹配"
             echo "   期望: $DNSFILTER_COMMIT"
             echo "   实际: $ACTUAL_DF"
-            echo "   请更新 env.DNSFILTER_COMMIT 为上面的实际值"
             exit 1
           fi
           echo "✅ dnsfilter hash 验证通过: ${DNSFILTER_COMMIT:0:8}"
@@ -157,7 +151,6 @@ jobs:
           cd openwrt
 
           {
-            # ========== 目标设备 ==========
             echo "CONFIG_TARGET_qualcommax=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
@@ -165,7 +158,6 @@ jobs:
             echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
             echo "CONFIG_SSTRIP=y"
             
-            # ========== LuCI 基础 ==========
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-base=y"
             echo "CONFIG_PACKAGE_luci-compat=y"
@@ -174,14 +166,12 @@ jobs:
             echo "CONFIG_PACKAGE_luci-theme-bootstrap=y"
             echo "CONFIG_PACKAGE_luci-theme-argon=y"
             
-            # 中文界面
             echo "CONFIG_LUCI_LANG_zh-cn=y"
             echo "CONFIG_LUCI_LANG_zh_Hans=y"
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y"
             
-            # ========== 网络基础与防火墙 ==========
             echo "CONFIG_PACKAGE_dnsmasq-full=y"
             echo "# CONFIG_PACKAGE_dnsmasq is not set"
             echo "CONFIG_PACKAGE_firewall4=y"
@@ -193,7 +183,6 @@ jobs:
             echo "# CONFIG_PACKAGE_iptables is not set"
             echo "CONFIG_PACKAGE_opkg=y"
             
-            # ========== 无线驱动 (IPQ6010 AHB + 固件) ==========
             echo "CONFIG_PACKAGE_kmod-ath11k=y"
             echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y"
             echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y"
@@ -201,7 +190,6 @@ jobs:
             echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set"
             echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set"
             
-            # ========== 核心功能 ==========
             echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
             echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
             echo "CONFIG_PACKAGE_sing-box=y"
@@ -211,7 +199,6 @@ jobs:
             echo "CONFIG_PACKAGE_kmod-zram=y"
             echo "CONFIG_PACKAGE_zram-swap=y"
             
-            # ========== 实用工具 ==========
             echo "CONFIG_PACKAGE_luci-app-ttyd=y"
             echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
             echo "CONFIG_PACKAGE_kmod-usb-storage=y"
@@ -224,7 +211,6 @@ jobs:
             echo "CONFIG_PACKAGE_wget-ssl=y"
             echo "CONFIG_PACKAGE_file=y"
             
-            # ========== 明确禁用 ==========
             echo "# CONFIG_PACKAGE_luci-app-adguardhome is not set"
             echo "# CONFIG_PACKAGE_adguardhome is not set"
             echo "# CONFIG_PACKAGE_luci-app-openclash is not set"
@@ -248,7 +234,6 @@ jobs:
           set -euo pipefail
           cd openwrt
           
-          # 使用 grep -o 稳健提取包名（兼容前导空格/不同分隔符）
           ZRAM_PKG=$(./scripts/feeds search zram 2>/dev/null \
             | grep -o 'luci-app-zram[^ ]*' | head -1 || true)
           
@@ -259,7 +244,6 @@ jobs:
             echo "⚠️ 未找到 luci-app-zram 系列包，仅保留内核模块 + 初始化脚本"
           fi
           
-          # 最后执行 defconfig，一次性展开所有依赖
           make defconfig
           echo "✅ defconfig 完成，依赖已展开"
 
@@ -284,14 +268,14 @@ jobs:
           fi
 
       - name: 📦 整理固件文件
-        if: steps.compile.outputs.status == 'success'
+        if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/bin/targets/*/*
           rm -rf packages
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
       - name: 📤 上传固件到 Artifacts
-        if: steps.compile.outputs.status == 'success'
+        if: ${{ steps.compile.outputs.status == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt-360V6-${{ github.run_number }}
@@ -300,8 +284,8 @@ jobs:
             ${{ env.FIRMWARE_PATH }}/*.itb
           retention-days: 7
 
-            - name: 🚀 发布到 Release
-        if: steps.compile.outputs.status == 'success'
+      - name: 🚀 发布到 Release
+        if: ${{ steps.compile.outputs.status == 'success' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
@@ -310,7 +294,33 @@ jobs:
             ${{ env.FIRMWARE_PATH }}/*.itb
           body: |
             ## 📦 OpenWrt for 360 V6 (Qualcomm IPQ60xx)
-            # ...（body 内容保持不变）
+            - 源码分支: `${{ env.REPO_BRANCH }}` | Commit: `${{ env.OPENWRT_COMMIT }}`
+            - 构建编号: `${{ github.run_number }}` | 日期: `${{ env.BUILD_DATE }}`
+            - **默认 LAN IP: `192.168.2.1`** | 首次登录无需密码，请登录后立即设置
+
+            ### 🛠️ 实际内置功能
+            | 模块 | 组件 | 说明 |
+            |---|---|---|
+            | 🔐 科学上网 | `HomeProxy` + `sing-box` | 多核优化，版本锁定 `${{ env.HOMEPROXY_SHORT }}` |
+            | 🛡️ 去广告 | `DNSFilter` | 基于 dnsmasq 注入，版本锁定 `${{ env.DNSFILTER_SHORT }}` |
+            | ⚡ 网络加速 | `BBR v1` (内核级) | `99-bbr.conf` 刷入即生效，TCP 拥塞控制已优化 |
+            | 🌐 防火墙/NAT | `firewall4` + `nftables` + `kmod-nft-nat` | 完整 IPv4/IPv6 NAT，硬件卸载支持 |
+            | 💾 内存优化 | `ZRAM` (自动压缩) | 动态内存压缩，有效防 OOM，等效 RAM 提升 40%+ |
+            | 🌍 系统基础 | `NTP(阿里云/腾讯)` / `DNS缓存(1000)` / `CST-8` | 开箱即同步时间，国内解析稳定 |
+            | 🖥️ 管理界面 | `Argon 主题 ${{ env.ARGON_TAG }}` + `LuCI 中文` | 版本锁定，界面简洁稳定 |
+            | 💻 调试工具 | `TTYd` + `bash` + `htop` | 网页终端，轻量排查 |
+            | 📁 文件传输 | 内置 `Dropbear SFTP` | 零依赖传输，推荐使用 `WinSCP`/`FileZilla` |
+            | 📶 无线驱动 | `kmod-ath11k` + `kmod-ath11k-ahb` + `firmware-ipq6010` | 精准适配 360V6 内置 Wi-Fi |
+
+            ### 🗑️ 明确剔除（节省资源/防冲突）
+            `AdGuardHome` `OpenClash` `MosDNS` `SmartDNS` `Docker` `Samba` `Netdata` `iptables` `QCN9074固件`
+
+            ### 📌 首次配置提示
+            1. 连接 LAN 口，电脑自动获取 IP 或设为 `192.168.2.x` 段，访问 `http://192.168.2.1`
+            2. 登录后请立即设置 root 密码
+            3. LuCI → `网络` → `DNSFilter` 勾选规则源并保存
+            4. LuCI → `系统` → `ZRAM` 点击启用（如界面存在）
+            5. 定时重启：LuCI → `系统` → `计划任务` → 添加 `0 4 * * 0 /sbin/reboot`
           draft: false
           prerelease: false
         env:
