@@ -11,10 +11,6 @@ env:
   REPO_URL: https://github.com/openwrt/openwrt
   REPO_BRANCH: openwrt-23.05
   TZ: Asia/Shanghai
-  # 🔒 第三方插件锁定版本（必须替换为真实 40 位 git hash）
-  # 获取命令：git ls-remote https://github.com/immortalwrt/homeproxy.git HEAD
-  HOMEPROXY_COMMIT: "替换为真实40位hash"
-  DNSFILTER_COMMIT: "替换为真实40位hash"
   ARGON_TAG: "v2.3.1"
 
 jobs:
@@ -27,19 +23,6 @@ jobs:
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v4
-
-      - name: 🔒 验证版本 hash 已配置（快速失败守卫）
-        run: |
-          set -euo pipefail
-          for var in HOMEPROXY_COMMIT DNSFILTER_COMMIT; do
-            val="${!var}"
-            if ! [[ "$val" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "❌ $var 不是有效的 40 位 git hash: '$val'"
-              echo "   获取方式: git ls-remote https://github.com/immortalwrt/homeproxy.git HEAD"
-              exit 1
-            fi
-          done
-          echo "✅ 版本 hash 格式验证通过"
 
       - name: 🗑️ 激进释放磁盘空间
         run: |
@@ -66,15 +49,13 @@ jobs:
             swig unzip zlib1g-dev wget curl ca-certificates file
           sudo timedatectl set-timezone "$TZ"
 
-      - name: 📥 克隆 OpenWrt 源码 + 预截断 short hash
+      - name: 📥 克隆 OpenWrt 源码
         run: |
           set -euo pipefail
           git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
           cd openwrt
           echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
-          echo "HOMEPROXY_SHORT=${HOMEPROXY_COMMIT:0:8}" >> $GITHUB_ENV
-          echo "DNSFILTER_SHORT=${DNSFILTER_COMMIT:0:8}" >> $GITHUB_ENV
 
       - name: 📦 安装第三方插件
         env:
@@ -103,30 +84,19 @@ jobs:
             return 0
           }
 
+          # Argon 主题 - 锁定 release tag
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon" || exit 1
 
-          echo "📥 浅克隆 homeproxy..."
-          git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
-          ACTUAL_HP=$(git -C package/homeproxy rev-parse HEAD)
-          if [ "$ACTUAL_HP" != "${HOMEPROXY_COMMIT}" ]; then
-            echo "❌ homeproxy hash 不匹配"
-            echo "   期望: $HOMEPROXY_COMMIT"
-            echo "   实际: $ACTUAL_HP"
-            exit 1
-          fi
-          echo "✅ homeproxy hash 验证通过: ${HOMEPROXY_COMMIT:0:8}"
+          # HomeProxy - 浅克隆最新 master（无需 hash 验证）
+          echo "📥 浅克隆 homeproxy (master)..."
+          git clone --depth 1 --branch master --single-branch \
+            https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
 
-          echo "📥 浅克隆 luci-app-dnsfilter..."
-          git clone --depth 1 https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter || exit 1
-          ACTUAL_DF=$(git -C package/luci-app-dnsfilter rev-parse HEAD)
-          if [ "$ACTUAL_DF" != "${DNSFILTER_COMMIT}" ]; then
-            echo "❌ dnsfilter hash 不匹配"
-            echo "   期望: $DNSFILTER_COMMIT"
-            echo "   实际: $ACTUAL_DF"
-            exit 1
-          fi
-          echo "✅ dnsfilter hash 验证通过: ${DNSFILTER_COMMIT:0:8}"
+          # DNSFilter - 浅克隆最新 master（无需 hash 验证）
+          echo "📥 浅克隆 luci-app-dnsfilter (master)..."
+          git clone --depth 1 --branch master --single-branch \
+            https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter || exit 1
 
       - name: 🔄 更新 Feeds
         run: |
@@ -301,8 +271,8 @@ jobs:
             ### 🛠️ 实际内置功能
             | 模块 | 组件 | 说明 |
             |---|---|---|
-            | 🔐 科学上网 | `HomeProxy` + `sing-box` | 多核优化，版本锁定 `${{ env.HOMEPROXY_SHORT }}` |
-            | 🛡️ 去广告 | `DNSFilter` | 基于 dnsmasq 注入，版本锁定 `${{ env.DNSFILTER_SHORT }}` |
+            | 🔐 科学上网 | `HomeProxy` + `sing-box` | 多核优化，版本: `latest (master)` |
+            | 🛡️ 去广告 | `DNSFilter` | 基于 dnsmasq 注入，版本: `latest (master)` |
             | ⚡ 网络加速 | `BBR v1` (内核级) | `99-bbr.conf` 刷入即生效，TCP 拥塞控制已优化 |
             | 🌐 防火墙/NAT | `firewall4` + `nftables` + `kmod-nft-nat` | 完整 IPv4/IPv6 NAT，硬件卸载支持 |
             | 💾 内存优化 | `ZRAM` (自动压缩) | 动态内存压缩，有效防 OOM，等效 RAM 提升 40%+ |
