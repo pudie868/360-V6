@@ -57,7 +57,7 @@ jobs:
           echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
 
-      - name: 📦 安装第三方插件
+            - name: 📦 安装第三方插件
         env:
           GIT_TERMINAL_PROMPT: "0"
         run: |
@@ -88,15 +88,17 @@ jobs:
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon" || exit 1
 
-          # HomeProxy - 浅克隆最新 master（无需 hash 验证）
-          echo "📥 浅克隆 homeproxy (master)..."
-          git clone --depth 1 --branch master --single-branch \
-            https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
+          # HomeProxy - 浅克隆（自动使用默认分支，避免 master/main 冲突）
+          echo "📥 浅克隆 homeproxy..."
+          git clone --depth 1 --single-branch \
+            https://github.com/immortalwrt/homeproxy.git package/homeproxy \
+            || { echo "❌ homeproxy 克隆失败，请确认仓库是否存在或分支名称是否正确"; exit 1; }
 
-          # DNSFilter - 浅克隆最新 master（无需 hash 验证）
-          echo "📥 浅克隆 luci-app-dnsfilter (master)..."
-          git clone --depth 1 --branch master --single-branch \
-            https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter || exit 1
+          # DNSFilter - 浅克隆（自动使用默认分支）
+          echo "📥 浅克隆 luci-app-dnsfilter..."
+          git clone --depth 1 --single-branch \
+            https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter \
+            || { echo "❌ dnsfilter 克隆失败，请确认仓库是否存在或分支名称是否正确"; exit 1; }
 
       - name: 🔄 更新 Feeds
         run: |
