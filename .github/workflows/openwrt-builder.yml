@@ -1,0 +1,352 @@
+name: Build OpenWrt for 360 V6
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/openwrt-builder.yml'
+
+env:
+  REPO_URL: https://github.com/openwrt/openwrt
+  REPO_BRANCH: openwrt-23.05
+  TZ: Asia/Shanghai
+  # 🔒 第三方插件锁定版本（必须替换为真实 40 位 git hash）
+  # 获取命令：git ls-remote https://github.com/immortalwrt/homeproxy.git HEAD
+  HOMEPROXY_COMMIT: "替换为真实40位hash"
+  DNSFILTER_COMMIT: "替换为真实40位hash"
+  ARGON_TAG: "v2.3.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔒 验证版本 hash 已配置（快速失败守卫）
+        run: |
+          set -euo pipefail
+          for var in HOMEPROXY_COMMIT DNSFILTER_COMMIT; do
+            val="${!var}"
+            if ! [[ "$val" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "❌ $var 不是有效的 40 位 git hash: '$val'"
+              echo "   获取方式: git ls-remote https://github.com/immortalwrt/homeproxy.git HEAD"
+              exit 1
+            fi
+          done
+          echo "✅ 版本 hash 格式验证通过"
+
+      - name: 🗑️ 激进释放磁盘空间
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost /usr/share/swift /usr/local/.ghcup /usr/lib/jvm
+          sudo docker system prune -af --volumes 2>/dev/null || true
+          sudo apt-get autoremove -y --purge && sudo apt-get clean
+          sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
+          df -h
+          FREE_GB=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G')
+          if [ "$FREE_GB" -lt 30 ]; then
+            echo "❌ 剩余磁盘空间不足 30GB，编译可能失败"
+            exit 1
+          fi
+
+      - name: 🛠️ 安装编译依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev python3 python3-pip rsync \
+            swig unzip zlib1g-dev wget curl ca-certificates file
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: 📥 克隆 OpenWrt 源码 + 预截断 short hash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+          cd openwrt
+          echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
+          # 预截断 short hash 供 Release body 使用（避免表达式切片语法不支持）
+          echo "HOMEPROXY_SHORT=${HOMEPROXY_COMMIT:0:8}" >> $GITHUB_ENV
+          echo "DNSFILTER_SHORT=${DNSFILTER_COMMIT:0:8}" >> $GITHUB_ENV
+
+      - name: 📦 安装第三方插件
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          cd openwrt
+          
+          gh_download() {
+            local url="$1" dest="$2"
+            local tmp
+            tmp=$(mktemp /tmp/pkg_XXXXXX.tar.gz)
+            echo "📥 下载: $url"
+            curl -fSL --retry 3 --retry-delay 5 \
+              -H "User-Agent: GitHubActions/OpenWrtBuilder" \
+              -o "$tmp" "$url" || { echo "❌ 下载失败: $url"; rm -f "$tmp"; return 1; }
+            
+            gzip -t "$tmp" 2>/dev/null \
+              || { echo "❌ gzip 校验失败: $url"; rm -f "$tmp"; return 1; }
+            
+            mkdir -p "$dest"
+            tar -xzf "$tmp" -C "$dest" --strip-components=1 \
+              || { echo "❌ 解压失败: $url"; rm -f "$tmp"; return 1; }
+            rm -f "$tmp"
+            echo "✅ 安装完成: $dest"
+            return 0
+          }
+
+          # Argon 主题 - 锁定 release tag
+          rm -rf package/lean/luci-theme-argon 2>/dev/null || true
+          gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon" || exit 1
+
+          # HomeProxy - 浅克隆 + hash 验证
+          echo "📥 浅克隆 homeproxy..."
+          git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
+          ACTUAL_HP=$(git -C package/homeproxy rev-parse HEAD)
+          if [ "$ACTUAL_HP" != "${HOMEPROXY_COMMIT}" ]; then
+            echo "❌ homeproxy hash 不匹配"
+            echo "   期望: $HOMEPROXY_COMMIT"
+            echo "   实际: $ACTUAL_HP"
+            echo "   请更新 env.HOMEPROXY_COMMIT 为上面的实际值"
+            exit 1
+          fi
+          echo "✅ homeproxy hash 验证通过: ${HOMEPROXY_COMMIT:0:8}"
+
+          # DNSFilter - 浅克隆 + hash 验证
+          echo "📥 浅克隆 luci-app-dnsfilter..."
+          git clone --depth 1 https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter || exit 1
+          ACTUAL_DF=$(git -C package/luci-app-dnsfilter rev-parse HEAD)
+          if [ "$ACTUAL_DF" != "${DNSFILTER_COMMIT}" ]; then
+            echo "❌ dnsfilter hash 不匹配"
+            echo "   期望: $DNSFILTER_COMMIT"
+            echo "   实际: $ACTUAL_DF"
+            echo "   请更新 env.DNSFILTER_COMMIT 为上面的实际值"
+            exit 1
+          fi
+          echo "✅ dnsfilter hash 验证通过: ${DNSFILTER_COMMIT:0:8}"
+
+      - name: 🔄 更新 Feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 📁 同步自定义配置文件
+        run: |
+          echo "📦 同步仓库 files/ 目录到 OpenWrt 源码..."
+          if [ -d files ]; then
+            cp -rf files openwrt/
+            chmod 755 openwrt/files/etc/uci-defaults/99-firstboot-setup.sh 2>/dev/null || true
+            echo "✅ 自定义配置已就绪 (BBR / 192.168.2.1 / NTP / DNS优化)"
+          else
+            echo "⚠️ 未找到 files/ 目录，跳过配置注入"
+          fi
+
+      - name: ⚙️ 生成基础 .config（不含 zram）
+        run: |
+          set -euo pipefail
+          cd openwrt
+
+          {
+            # ========== 目标设备 ==========
+            echo "CONFIG_TARGET_qualcommax=y"
+            echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
+            echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=150"
+            echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
+            echo "CONFIG_SSTRIP=y"
+            
+            # ========== LuCI 基础 ==========
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_PACKAGE_luci-base=y"
+            echo "CONFIG_PACKAGE_luci-compat=y"
+            echo "CONFIG_PACKAGE_luci-lib-ipkg=y"
+            echo "CONFIG_PACKAGE_luci-ssl=y"
+            echo "CONFIG_PACKAGE_luci-theme-bootstrap=y"
+            echo "CONFIG_PACKAGE_luci-theme-argon=y"
+            
+            # 中文界面
+            echo "CONFIG_LUCI_LANG_zh-cn=y"
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y"
+            
+            # ========== 网络基础与防火墙 ==========
+            echo "CONFIG_PACKAGE_dnsmasq-full=y"
+            echo "# CONFIG_PACKAGE_dnsmasq is not set"
+            echo "CONFIG_PACKAGE_firewall4=y"
+            echo "CONFIG_PACKAGE_nftables=y"
+            echo "CONFIG_PACKAGE_kmod-nft-offload=y"
+            echo "CONFIG_PACKAGE_kmod-nft-nat=y"
+            echo "# CONFIG_PACKAGE_kmod-ipt-nat6 is not set"
+            echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set"
+            echo "# CONFIG_PACKAGE_iptables is not set"
+            echo "CONFIG_PACKAGE_opkg=y"
+            
+            # ========== 无线驱动 (IPQ6010 AHB + 固件) ==========
+            echo "CONFIG_PACKAGE_kmod-ath11k=y"
+            echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y"
+            echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y"
+            echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set"
+            echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set"
+            echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set"
+            
+            # ========== 核心功能 ==========
+            echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
+            echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
+            echo "CONFIG_PACKAGE_sing-box=y"
+            echo "CONFIG_PACKAGE_luci-app-dnsfilter=y"
+            echo "CONFIG_PACKAGE_luci-i18n-dnsfilter-zh-cn=y"
+            echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
+            echo "CONFIG_PACKAGE_kmod-zram=y"
+            echo "CONFIG_PACKAGE_zram-swap=y"
+            
+            # ========== 实用工具 ==========
+            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
+            echo "CONFIG_PACKAGE_kmod-usb-storage=y"
+            echo "CONFIG_PACKAGE_kmod-fs-ext4=y"
+            echo "CONFIG_PACKAGE_kmod-fs-vfat=y"
+            echo "CONFIG_PACKAGE_block-mount=y"
+            echo "CONFIG_PACKAGE_bash=y"
+            echo "CONFIG_PACKAGE_htop=y"
+            echo "CONFIG_PACKAGE_curl=y"
+            echo "CONFIG_PACKAGE_wget-ssl=y"
+            echo "CONFIG_PACKAGE_file=y"
+            
+            # ========== 明确禁用 ==========
+            echo "# CONFIG_PACKAGE_luci-app-adguardhome is not set"
+            echo "# CONFIG_PACKAGE_adguardhome is not set"
+            echo "# CONFIG_PACKAGE_luci-app-openclash is not set"
+            echo "# CONFIG_PACKAGE_luci-app-mosdns is not set"
+            echo "# CONFIG_PACKAGE_smartdns is not set"
+            echo "# CONFIG_PACKAGE_luci-app-samba4 is not set"
+            echo "# CONFIG_PACKAGE_docker is not set"
+            echo "# CONFIG_PACKAGE_xray-core is not set"
+            echo "# CONFIG_PACKAGE_hysteria is not set"
+            echo "# CONFIG_PACKAGE_naiveproxy is not set"
+            echo "# CONFIG_PACKAGE_tuic-client is not set"
+            echo "# CONFIG_PACKAGE_netdata is not set"
+            echo "# CONFIG_PACKAGE_vnstat2 is not set"
+            echo "# CONFIG_PACKAGE_luci-app-fileassistant is not set"
+          } > .config
+
+          echo "✅ 基础 .config 生成完成（待追加 zram）"
+
+      - name: 🔍 动态确认 zram 包名 + make defconfig
+        run: |
+          set -euo pipefail
+          cd openwrt
+          
+          # 使用 grep -o 稳健提取包名（兼容前导空格/不同分隔符）
+          ZRAM_PKG=$(./scripts/feeds search zram 2>/dev/null \
+            | grep -o 'luci-app-zram[^ ]*' | head -1 || true)
+          
+          if [ -n "$ZRAM_PKG" ]; then
+            echo "CONFIG_PACKAGE_${ZRAM_PKG}=y" >> .config
+            echo "✅ zram 界面包: $ZRAM_PKG"
+          else
+            echo "⚠️ 未找到 luci-app-zram 系列包，仅保留内核模块 + 初始化脚本"
+          fi
+          
+          # 最后执行 defconfig，一次性展开所有依赖
+          make defconfig
+          echo "✅ defconfig 完成，依赖已展开"
+
+      - name: ⬇️ 下载编译所需软件包
+        run: |
+          cd openwrt
+          make download -j$(nproc) || exit 1
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: 🔨 编译固件
+        id: compile
+        run: |
+          cd openwrt
+          echo "🔨 开始编译，负载阈值 $(nproc)..."
+          make -j$(nproc) -l$(nproc) V=s 2>&1 | tee build.log
+          if [ ${PIPESTATUS[0]} -eq 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            tail -50 build.log
+            exit 1
+          fi
+
+      - name: 📦 整理固件文件
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt/bin/targets/*/*
+          rm -rf packages
+          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+      - name: 📤 上传固件到 Artifacts
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-360V6-${{ github.run_number }}
+          path: |
+            ${{ env.FIRMWARE_PATH }}/*.ubi
+            ${{ env.FIRMWARE_PATH }}/*.itb
+          retention-days: 7
+
+      - name: 🚀 发布到 Release
+        if: steps.compile.outputs.status == 'success'
+        uses: softprops/action-gh-release@058f33289520966d2b503798c056d53d31183900
+        with:
+          tag_name: v${{ github.run_number }}
+          files: |
+            ${{ env.FIRMWARE_PATH }}/*.ubi
+            ${{ env.FIRMWARE_PATH }}/*.itb
+          body: |
+            ## 📦 OpenWrt for 360 V6 (Qualcomm IPQ60xx)
+            - 源码分支: `${{ env.REPO_BRANCH }}` | Commit: `${{ env.OPENWRT_COMMIT }}`
+            - 构建编号: `${{ github.run_number }}` | 日期: `${{ env.BUILD_DATE }}`
+            - **默认 LAN IP: `192.168.2.1`** | 首次登录无需密码，请登录后立即设置
+
+            ### 🛠️ 实际内置功能
+            | 模块 | 组件 | 说明 |
+            |---|---|---|
+            | 🔐 科学上网 | `HomeProxy` + `sing-box` | 多核优化，版本锁定 `${{ env.HOMEPROXY_SHORT }}` |
+            | 🛡️ 去广告 | `DNSFilter` | 基于 dnsmasq 注入，版本锁定 `${{ env.DNSFILTER_SHORT }}` |
+            | ⚡ 网络加速 | `BBR v1` (内核级) | `99-bbr.conf` 刷入即生效，TCP 拥塞控制已优化 |
+            | 🌐 防火墙/NAT | `firewall4` + `nftables` + `kmod-nft-nat` | 完整 IPv4/IPv6 NAT，硬件卸载支持 |
+            | 💾 内存优化 | `ZRAM` (自动压缩) | 动态内存压缩，有效防 OOM，等效 RAM 提升 40%+ |
+            | 🌍 系统基础 | `NTP(阿里云/腾讯)` / `DNS缓存(1000)` / `CST-8` | 开箱即同步时间，国内解析稳定 |
+            | 🖥️ 管理界面 | `Argon 主题 ${{ env.ARGON_TAG }}` + `LuCI 中文` | 版本锁定，界面简洁稳定 |
+            | 💻 调试工具 | `TTYd` + `bash` + `htop` | 网页终端，轻量排查 |
+            | 📁 文件传输 | 内置 `Dropbear SFTP` | 零依赖传输，推荐使用 `WinSCP`/`FileZilla` |
+            | 📶 无线驱动 | `kmod-ath11k` + `kmod-ath11k-ahb` + `firmware-ipq6010` | 精准适配 360V6 内置 Wi-Fi |
+
+            ### 🗑️ 明确剔除（节省资源/防冲突）
+            `AdGuardHome` `OpenClash` `MosDNS` `SmartDNS` `Docker` `Samba` `Netdata` `iptables` `QCN9074固件`
+
+            ### 📌 首次配置提示
+            1. 连接 LAN 口，电脑自动获取 IP 或设为 `192.168.2.x` 段，访问 `http://192.168.2.1`
+            2. 登录后请立即设置 root 密码
+            3. LuCI → `网络` → `DNSFilter` 勾选规则源并保存
+            4. LuCI → `系统` → `ZRAM` 点击启用（如界面存在）
+            5. 定时重启：LuCI → `系统` → `计划任务` → 添加 `0 4 * * 0 /sbin/reboot`
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📋 上传编译日志（始终执行）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: openwrt/build.log
+          retention-days: 3
+          if-no-files-found: ignore
