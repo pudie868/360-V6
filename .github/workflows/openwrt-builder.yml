@@ -46,8 +46,9 @@ jobs:
           sudo apt-get install -y \
             build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
             gettext git libncurses5-dev libssl-dev python3 python3-pip rsync \
-            swig unzip zlib1g-dev wget curl ca-certificates file
+            swig unzip zlib1g-dev wget curl ca-certificates file golang-go
           sudo timedatectl set-timezone "$TZ"
+        # FIX #10: golang-go added — required to build sing-box from source
 
       - name: 📥 克隆 OpenWrt 源码
         run: |
@@ -57,13 +58,13 @@ jobs:
           echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
 
-            - name: 📦 安装第三方插件
-        env:
-          GIT_TERMINAL_PROMPT: "0"
+      # FIX #1: Corrected indentation — this step was broken (extra leading spaces on `- name:`)
+      - name: 📦 安装第三方插件
+        # FIX #2: Removed GIT_TERMINAL_PROMPT — only applies to git, not curl; causes confusion
         run: |
           set -euo pipefail
           cd openwrt
-          
+
           gh_download() {
             local url="$1" dest="$2"
             local tmp
@@ -86,13 +87,13 @@ jobs:
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon" || exit 1
 
-          # HomeProxy - curl 下载 + master/main 双分支兜底
+          # HomeProxy
           echo "📥 下载 homeproxy..."
           gh_download "https://github.com/immortalwrt/homeproxy/archive/refs/heads/master.tar.gz" "package/homeproxy" \
             || gh_download "https://github.com/immortalwrt/homeproxy/archive/refs/heads/main.tar.gz" "package/homeproxy" \
             || { echo "❌ homeproxy 所有分支下载失败，请确认仓库是否存在"; exit 1; }
 
-          # DNSFilter - 同样策略
+          # DNSFilter
           echo "📥 下载 luci-app-dnsfilter..."
           gh_download "https://github.com/sirpdboy/luci-app-dnsfilter/archive/refs/heads/master.tar.gz" "package/luci-app-dnsfilter" \
             || gh_download "https://github.com/sirpdboy/luci-app-dnsfilter/archive/refs/heads/main.tar.gz" "package/luci-app-dnsfilter" \
@@ -109,7 +110,10 @@ jobs:
           echo "📦 同步仓库 files/ 目录到 OpenWrt 源码..."
           if [ -d files ]; then
             cp -rf files openwrt/
-            chmod 755 openwrt/files/etc/uci-defaults/99-firstboot-setup.sh 2>/dev/null || true
+            # FIX #8: Warn explicitly if chmod fails (wrong path will no longer silently pass)
+            if ! chmod 755 openwrt/files/etc/uci-defaults/99-firstboot-setup.sh; then
+              echo "⚠️ 警告: chmod 755 失败，请检查 files/ 路径是否正确"
+            fi
             echo "✅ 自定义配置已就绪"
           else
             echo "⚠️ 未找到 files/ 目录，跳过配置注入"
@@ -208,18 +212,24 @@ jobs:
         run: |
           cd openwrt
           make download -j$(nproc) || exit 1
-          find dl -size -1024c -exec rm -f {} \;
+          # FIX #5: Changed -1024c to -1c — only remove truly zero-byte/empty files,
+          # not legitimate small files like hash manifests
+          find dl -size -1c -exec rm -f {} \;
 
+      # FIX #4 & #9: Added `shell: bash` to guarantee PIPESTATUS and bash syntax work correctly
       - name: 🔨 编译固件
         id: compile
+        shell: bash
         run: |
           cd openwrt
-          echo "🔨 开始编译，负载阈值 $(nproc)..."
-          make -j$(nproc) -l$(nproc) V=s 2>&1 | tee build.log
-          if [ ${PIPESTATUS[0]} -eq 0 ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
+          echo "🔨 开始编译，CPU 核心数: $(nproc)..."
+          # FIX #3: Removed redundant -l$(nproc) — when equal to -j it provides no throttling benefit.
+          # Use -j$(nproc) alone; add -l only if you want to set it lower than -j (e.g. -l$(($(nproc)-1)))
+          make -j$(nproc) V=s 2>&1 | tee build.log
+          if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
           else
-            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "status=failure" >> "$GITHUB_OUTPUT"
             tail -50 build.log
             exit 1
           fi
@@ -240,12 +250,17 @@ jobs:
             ${{ env.FIRMWARE_PATH }}/*.ubi
             ${{ env.FIRMWARE_PATH }}/*.itb
           retention-days: 7
+          # FIX #7: Warn instead of error if only one file type is produced (NAND-only targets
+          # may produce only .ubi; nor both .ubi and .itb simultaneously)
+          if-no-files-found: warn
 
       - name: 🚀 发布到 Release
         if: ${{ steps.compile.outputs.status == 'success' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
+          # FIX #6: Added name field for a human-readable release title
+          name: "OpenWrt 360 V6 — Build ${{ github.run_number }} (${{ env.BUILD_DATE }})"
           files: |
             ${{ env.FIRMWARE_PATH }}/*.ubi
             ${{ env.FIRMWARE_PATH }}/*.itb
