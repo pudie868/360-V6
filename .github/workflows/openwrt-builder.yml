@@ -9,11 +9,9 @@ on:
 
 env:
   REPO_URL: https://github.com/openwrt/openwrt
-  # 使用 main 分支 — qihoo_360v6 设备定义在 main 里，23.05 分支没有此目标
   REPO_BRANCH: main
   TZ: Asia/Shanghai
   ARGON_TAG: "v2.3.1"
-  # kiddin9/luci-app-dnsfilter 固定版本，升级时只改这里
   DNSFILTER_TAG: "luci-app-dnsfilter_1.0-10"
 
 jobs:
@@ -51,7 +49,6 @@ jobs:
             gettext git libncurses5-dev libssl-dev python3 python3-pip rsync \
             swig unzip zlib1g-dev wget curl ca-certificates file golang-go
           sudo timedatectl set-timezone "$TZ"
-          # golang-go: sing-box 从源码编译时需要
 
       - name: 📥 克隆 OpenWrt 源码
         run: |
@@ -66,7 +63,6 @@ jobs:
           set -euo pipefail
           cd openwrt
 
-          # curl 下载并校验 tar.gz，失败时打印原因
           gh_download() {
             local url="$1" dest="$2"
             local tmp
@@ -84,13 +80,11 @@ jobs:
             echo "✅ 安装完成: $dest"
           }
 
-          # Argon 主题（固定 tag，稳定可靠）
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download \
             "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" \
             "package/luci-theme-argon"
 
-          # HomeProxy — git clone 比 tar 包更可靠（自动处理权限和目录结构）
           echo "📥 克隆 homeproxy..."
           git clone --depth 1 --branch master --single-branch \
             https://github.com/immortalwrt/homeproxy.git \
@@ -101,7 +95,6 @@ jobs:
             || { echo "❌ homeproxy 克隆失败"; exit 1; }
           echo "✅ homeproxy 安装完成"
 
-          # DNSFilter（owner 是 kiddin9，不是 sirpdboy）
           echo "📥 下载 luci-app-dnsfilter..."
           gh_download \
             "https://github.com/kiddin9/luci-app-dnsfilter/archive/refs/tags/${DNSFILTER_TAG}.tar.gz" \
@@ -109,20 +102,18 @@ jobs:
             || gh_download \
               "https://github.com/kiddin9/luci-app-dnsfilter/archive/refs/heads/main.tar.gz" \
               "package/luci-app-dnsfilter" \
-            || { echo "❌ dnsfilter 下载失败，请检查 DNSFILTER_TAG 版本或仓库状态"; exit 1; }
+            || { echo "❌ dnsfilter 下载失败"; exit 1; }
 
       - name: 🔄 更新 Feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
-          # 全量安装；显式补装 homeproxy 所需的 ucode-mod-digest
           ./scripts/feeds install -a
           ./scripts/feeds install ucode-mod-digest || true
-          # 确认 qualcommax target 已被识别（必须在 feeds 后才可见）
           echo "=== 可用目标验证 ==="
           ls target/linux/ | grep -i qualcommax \
             && echo "✅ qualcommax target 存在" \
-            || { echo "❌ qualcommax target 不存在，请确认使用 main 分支"; exit 1; }
+            || { echo "❌ qualcommax target 不存在"; exit 1; }
 
       - name: 📁 同步自定义配置文件
         run: |
@@ -130,7 +121,7 @@ jobs:
             echo "📦 同步 files/ 目录..."
             cp -rf files openwrt/
             if ! chmod 755 openwrt/files/etc/uci-defaults/99-firstboot-setup.sh 2>/dev/null; then
-              echo "⚠️ chmod 755 失败，请确认 files/etc/uci-defaults/99-firstboot-setup.sh 路径存在"
+              echo "⚠️ chmod 755 失败"
             fi
             echo "✅ 自定义配置已就绪"
           else
@@ -138,26 +129,18 @@ jobs:
           fi
 
       - name: ⚙️ 生成 .config 并运行 defconfig
-        # 必须在 feeds install 之后运行，否则 qualcommax 目标无法被 defconfig 识别
-        # 这是之前编译出 mips_24kc_musl 错误目标的根本原因
         run: |
           set -euo pipefail
           cd openwrt
 
-          # 写入基础配置
           {
-            # ===== 目标设备 =====
             echo "CONFIG_TARGET_qualcommax=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=150"
             echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
-
-            # ===== 编译优化 =====
             echo "CONFIG_CCACHE=y"
             echo "CONFIG_SSTRIP=y"
-
-            # ===== LuCI =====
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-base=y"
             echo "CONFIG_PACKAGE_luci-compat=y"
@@ -165,15 +148,11 @@ jobs:
             echo "CONFIG_PACKAGE_luci-ssl=y"
             echo "CONFIG_PACKAGE_luci-theme-bootstrap=y"
             echo "CONFIG_PACKAGE_luci-theme-argon=y"
-
-            # ===== 中文界面 =====
             echo "CONFIG_LUCI_LANG_zh-cn=y"
             echo "CONFIG_LUCI_LANG_zh_Hans=y"
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y"
-
-            # ===== 网络基础 =====
             echo "CONFIG_PACKAGE_dnsmasq-full=y"
             echo "# CONFIG_PACKAGE_dnsmasq is not set"
             echo "CONFIG_PACKAGE_firewall4=y"
@@ -184,30 +163,20 @@ jobs:
             echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set"
             echo "# CONFIG_PACKAGE_iptables is not set"
             echo "CONFIG_PACKAGE_opkg=y"
-
-            # ===== 无线驱动（360V6: IPQ6010, AHB 总线）=====
             echo "CONFIG_PACKAGE_kmod-ath11k=y"
             echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y"
             echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y"
             echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set"
             echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set"
             echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set"
-
-            # ===== 代理 =====
             echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
             echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
             echo "CONFIG_PACKAGE_sing-box=y"
-
-            # ===== 去广告 =====
             echo "CONFIG_PACKAGE_luci-app-dnsfilter=y"
             echo "CONFIG_PACKAGE_luci-i18n-dnsfilter-zh-cn=y"
-
-            # ===== 性能优化 =====
             echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
             echo "CONFIG_PACKAGE_kmod-zram=y"
             echo "CONFIG_PACKAGE_zram-swap=y"
-
-            # ===== 常用工具 =====
             echo "CONFIG_PACKAGE_luci-app-ttyd=y"
             echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
             echo "CONFIG_PACKAGE_kmod-usb-storage=y"
@@ -219,8 +188,6 @@ jobs:
             echo "CONFIG_PACKAGE_curl=y"
             echo "CONFIG_PACKAGE_wget-ssl=y"
             echo "CONFIG_PACKAGE_file=y"
-
-            # ===== 明确禁用 =====
             echo "# CONFIG_PACKAGE_luci-app-adguardhome is not set"
             echo "# CONFIG_PACKAGE_adguardhome is not set"
             echo "# CONFIG_PACKAGE_luci-app-openclash is not set"
@@ -236,10 +203,8 @@ jobs:
             echo "# CONFIG_PACKAGE_vnstat2 is not set"
           } > .config
 
-          # 第一次 defconfig
           make defconfig
 
-          # defconfig 偶尔会覆盖目标设备行，强制补写后再跑一次
           if ! grep -q "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
             echo "⚠️ 目标设备被 defconfig 覆盖，强制补写..."
             grep -v "^CONFIG_TARGET_" .config > .config.tmp
@@ -252,7 +217,6 @@ jobs:
             make defconfig
           fi
 
-          # 动态查找 zram LuCI 包名（各版本包名略有不同）
           ZRAM_PKG=$(./scripts/feeds search zram 2>/dev/null | grep -o 'luci-app-zram[^ ]*' | head -1 || true)
           if [ -n "$ZRAM_PKG" ]; then
             echo "CONFIG_PACKAGE_${ZRAM_PKG}=y" >> .config
@@ -261,7 +225,6 @@ jobs:
             echo "⚠️ 未找到 luci-app-zram 系列包，跳过"
           fi
 
-          # ===== 最终验证 =====
           echo "=== .config 关键项验证 ==="
           grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6" .config \
             && echo "✅ 目标设备: 360V6" || echo "❌ 目标设备未设置"
@@ -276,7 +239,7 @@ jobs:
           grep "CONFIG_PACKAGE_luci-app-dnsfilter=y" .config \
             && echo "✅ dnsfilter 已启用" || echo "⚠️ dnsfilter 未生效"
           grep "CONFIG_CCACHE=y" .config \
-            && echo "✅ CCACHE 编译缓存已启用" || echo "⚠️ CCACHE 未启用"
+            && echo "✅ CCACHE 已启用" || echo "⚠️ CCACHE 未启用"
 
       - name: 🩹 移除失效的内核 patch
         run: |
@@ -287,7 +250,6 @@ jobs:
         run: |
           cd openwrt
           make download -j$(nproc) || exit 1
-          # 只删除真正的空文件（0 字节），避免误删合法小文件
           find dl -size -1c -exec rm -f {} \;
 
       - name: 🩹 内核解压后 sed 修复 cpr4
@@ -302,15 +264,16 @@ jobs:
             echo "⚠️ 未找到 cpr4-apss-regulator.c，跳过"
           else
             echo "📄 找到: $CPR4_FILE"
-          if grep -q "ctrl->name = cpr3_thread->corner->desc->name;" "$CPR4_FILE"; then
-            sed -i \
-              's/ctrl->name = cpr3_thread->corner->desc->name;/ctrl->name = (char *)cpr3_thread->corner->desc->name;/' \
-              "$CPR4_FILE"
-            echo "✅ 修复完成"
-          else
-            echo "✅ 无需修复"
+            if grep -q "ctrl->name = cpr3_thread->corner->desc->name;" "$CPR4_FILE"; then
+              sed -i \
+                's/ctrl->name = cpr3_thread->corner->desc->name;/ctrl->name = (char *)cpr3_thread->corner->desc->name;/' \
+                "$CPR4_FILE"
+              echo "✅ 修复完成"
+              grep "ctrl->name" "$CPR4_FILE"
+            else
+              echo "✅ 无需修复（行已不存在或已修复）"
+            fi
           fi
-         fi
 
       - name: 🔨 编译固件
         id: compile
@@ -319,7 +282,6 @@ jobs:
           cd openwrt
           echo "🔨 开始编译，CPU 核心数: $(nproc)..."
 
-          # 多线程编译，失败后自动单线程重跑内核定位真实错误行
           make -j$(nproc) V=s 2>&1 | tee build.log
           MAKE_STATUS=${PIPESTATUS[0]}
 
@@ -328,19 +290,12 @@ jobs:
             echo "✅ 编译成功！"
           else
             echo "status=failure" >> "$GITHUB_OUTPUT"
-
-            # 提取真正的编译器报错（小写 error: 才是编译器输出）
             echo "========== 首个编译器报错 =========="
             grep -n " error:" build.log | grep -v "^Binary" | head -30 || true
-
-            # 如果是内核失败，单线程重跑内核获取完整上下文
             if grep -q "target/linux failed to build" build.log; then
-              echo "========== 单线程重跑内核获取完整报错 =========="
-              cd openwrt
+              echo "========== 单线程重跑内核 =========="
               make target/linux/compile -j1 V=s 2>&1 | grep -A5 " error:" | head -80 || true
-              cd ..
             fi
-
             echo "========== 日志末尾 80 行 =========="
             tail -80 build.log
             exit 1
