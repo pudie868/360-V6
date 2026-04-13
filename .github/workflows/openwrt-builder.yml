@@ -12,6 +12,8 @@ env:
   REPO_BRANCH: openwrt-23.05
   TZ: Asia/Shanghai
   ARGON_TAG: "v2.3.1"
+  # kiddin9/luci-app-dnsfilter — pinned to latest release tag for reproducible builds
+  DNSFILTER_TAG: "luci-app-dnsfilter_1.0-10"
 
 jobs:
   build:
@@ -93,11 +95,12 @@ jobs:
             || gh_download "https://github.com/immortalwrt/homeproxy/archive/refs/heads/main.tar.gz" "package/homeproxy" \
             || { echo "❌ homeproxy 所有分支下载失败，请确认仓库是否存在"; exit 1; }
 
-          # DNSFilter
+          # DNSFilter — correct owner is kiddin9 (sirpdboy never had this repo)
+          # Using a pinned release tag for reproducibility; update DNSFILTER_TAG in env to upgrade
           echo "📥 下载 luci-app-dnsfilter..."
-          gh_download "https://github.com/sirpdboy/luci-app-dnsfilter/archive/refs/heads/master.tar.gz" "package/luci-app-dnsfilter" \
-            || gh_download "https://github.com/sirpdboy/luci-app-dnsfilter/archive/refs/heads/main.tar.gz" "package/luci-app-dnsfilter" \
-            || { echo "❌ dnsfilter 所有分支下载失败，请确认仓库是否存在"; exit 1; }
+          gh_download "https://github.com/kiddin9/luci-app-dnsfilter/archive/refs/tags/${DNSFILTER_TAG}.tar.gz" "package/luci-app-dnsfilter" \
+            || gh_download "https://github.com/kiddin9/luci-app-dnsfilter/archive/refs/heads/main.tar.gz" "package/luci-app-dnsfilter" \
+            || { echo "❌ dnsfilter 下载失败，请检查 DNSFILTER_TAG 版本或仓库状态"; exit 1; }
 
       - name: 🔄 更新 Feeds
         run: |
