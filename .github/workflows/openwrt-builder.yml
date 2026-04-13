@@ -285,19 +285,6 @@ jobs:
           # 只删除真正的空文件（0 字节），避免误删合法小文件
           find dl -size -1c -exec rm -f {} \;
 
-      - name: 🧱 预编译内核（单独步骤，便于定位错误）
-        run: |
-          cd openwrt
-          echo "🧱 单独编译内核，失败时输出详细报错..."
-          make target/linux/compile -j$(nproc) V=s 2>&1 | tee kernel.log || {
-            echo "========== 内核编译失败，首个 error: =========="
-            grep -n " error:" kernel.log | head -30 || true
-            echo "========== 末尾 80 行 =========="
-            tail -80 kernel.log
-            exit 1
-          }
-          echo "✅ 内核编译成功"
-
       - name: 🔨 编译固件
         id: compile
         shell: bash
