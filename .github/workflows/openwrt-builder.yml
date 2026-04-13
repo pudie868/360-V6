@@ -57,7 +57,7 @@ jobs:
           echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
 
-      - name: 📦 安装第三方插件
+            - name: 📦 安装第三方插件
         env:
           GIT_TERMINAL_PROMPT: "0"
         run: |
@@ -69,7 +69,7 @@ jobs:
             local tmp
             tmp=$(mktemp /tmp/pkg_XXXXXX.tar.gz)
             echo "📥 下载: $url"
-            curl -fSL --retry 3 --retry-delay 5 \
+            curl -fSL --retry 3 --retry-delay 5 --connect-timeout 30 \
               -H "User-Agent: GitHubActions/OpenWrtBuilder" \
               -o "$tmp" "$url" || { echo "❌ 下载失败: $url"; rm -f "$tmp"; return 1; }
             gzip -t "$tmp" 2>/dev/null \
@@ -86,15 +86,17 @@ jobs:
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon" || exit 1
 
-          # HomeProxy - 自动使用默认分支
-          echo "📥 浅克隆 homeproxy..."
-          git clone --depth 1 --single-branch \
-            https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
+          # HomeProxy - curl 下载 + master/main 双分支兜底
+          echo "📥 下载 homeproxy..."
+          gh_download "https://github.com/immortalwrt/homeproxy/archive/refs/heads/master.tar.gz" "package/homeproxy" \
+            || gh_download "https://github.com/immortalwrt/homeproxy/archive/refs/heads/main.tar.gz" "package/homeproxy" \
+            || { echo "❌ homeproxy 所有分支下载失败，请确认仓库是否存在"; exit 1; }
 
-          # DNSFilter - 自动使用默认分支
-          echo "📥 浅克隆 luci-app-dnsfilter..."
-          git clone --depth 1 --single-branch \
-            https://github.com/sirpdboy/luci-app-dnsfilter.git package/luci-app-dnsfilter || exit 1
+          # DNSFilter - 同样策略
+          echo "📥 下载 luci-app-dnsfilter..."
+          gh_download "https://github.com/sirpdboy/luci-app-dnsfilter/archive/refs/heads/master.tar.gz" "package/luci-app-dnsfilter" \
+            || gh_download "https://github.com/sirpdboy/luci-app-dnsfilter/archive/refs/heads/main.tar.gz" "package/luci-app-dnsfilter" \
+            || { echo "❌ dnsfilter 所有分支下载失败，请确认仓库是否存在"; exit 1; }
 
       - name: 🔄 更新 Feeds
         run: |
