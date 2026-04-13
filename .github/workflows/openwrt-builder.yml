@@ -278,19 +278,10 @@ jobs:
           grep "CONFIG_CCACHE=y" .config \
             && echo "✅ CCACHE 编译缓存已启用" || echo "⚠️ CCACHE 未启用"
 
-      - name: 🩹 修复上游内核 patch 问题
+      - name: 🩹 移除失效的内核 patch
         run: |
-          set -euo pipefail
-          cd openwrt
-
-          # cpr4-apss-regulator.c 将 const char* 赋值给 char*，触发 -Werror=discarded-qualifiers
-          # OpenWrt main 分支的上游 bug。patch 写入 patches-6.12/ 后，编译系统解压内核时自动应用。
-          # 用 base64 编码绕开 shell heredoc 和 YAML 特殊字符（---、冒号、引号）的所有冲突。
-          PATCH_DIR="target/linux/qualcommax/patches-6.12"
-          mkdir -p "$PATCH_DIR"
-          echo "LS0tIGEvZHJpdmVycy9yZWd1bGF0b3IvY3ByNC1hcHNzLXJlZ3VsYXRvci5jCisrKyBiL2RyaXZlcnMvcmVndWxhdG9yL2NwcjQtYXBzcy1yZWd1bGF0b3IuYwpAQCAtMTc2NCw3ICsxNzY0LDcgQEAgc3RhdGljIGludCBjcHI0X2Fwc3NfaW5pdF9jb250cm9sbGVyKHN0cnVjdCBjcHIzX2NvbnRyb2xsZXIgKmN0cmwpCiAJaWYgKHJjKQogCQlyZXR1cm4gcmM7CiAKLQljdHJsLT5uYW1lID0gY3ByM190aHJlYWQtPmNvcm5lci0+ZGVzYy0+bmFtZTsKKwljdHJsLT5uYW1lID0gKGNoYXIgKiljcHIzX3RocmVhZC0+Y29ybmVyLT5kZXNjLT5uYW1lOwogCWN0cmwtPnNlbnNvcl9jb3VudCA9IGN0cmwtPnRocmVhZFswXS5wYXJ0X2NvdW50OwogCWN0cmwtPnNlbnNvcl9vd25lciA9IGRldm1fa2NhbGxvYyhjdHJsLT5kZXYsIGN0cmwtPnNlbnNvcl9jb3VudCwKIAkJCQkJICBzaXplb2YoKmN0cmwtPnNlbnNvcl9vd25lciksIEdGUF9LRVJORUwpOwo=" | base64 -d > "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
-          echo "✅ patch 已写入："
-          cat "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
+          rm -f openwrt/target/linux/qualcommax/patches-6.12/9999-fix-cpr4-const-qualifier.patch
+          echo "✅ 旧 patch 已移除"
 
       - name: ⬇️ 下载编译所需软件包
         run: |
@@ -298,6 +289,28 @@ jobs:
           make download -j$(nproc) || exit 1
           # 只删除真正的空文件（0 字节），避免误删合法小文件
           find dl -size -1c -exec rm -f {} \;
+
+      - name: 🩹 内核解压后 sed 修复 cpr4
+        run: |
+          set -euo pipefail
+          cd openwrt
+          echo "📦 解压内核源码..."
+          make target/linux/prepare -j$(nproc) V=s 2>&1 | tail -5 || true
+
+          CPR4_FILE=$(find build_dir -name "cpr4-apss-regulator.c" 2>/dev/null | head -1)
+          if [ -z "$CPR4_FILE" ]; then
+            echo "⚠️ 未找到 cpr4-apss-regulator.c，跳过"
+          else
+            echo "📄 找到: $CPR4_FILE"
+          if grep -q "ctrl->name = cpr3_thread->corner->desc->name;" "$CPR4_FILE"; then
+            sed -i \
+              's/ctrl->name = cpr3_thread->corner->desc->name;/ctrl->name = (char *)cpr3_thread->corner->desc->name;/' \
+              "$CPR4_FILE"
+            echo "✅ 修复完成"
+          else
+            echo "✅ 无需修复"
+          fi
+         fi
 
       - name: 🔨 编译固件
         id: compile
