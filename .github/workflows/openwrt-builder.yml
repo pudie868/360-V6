@@ -278,6 +278,49 @@ jobs:
           grep "CONFIG_CCACHE=y" .config \
             && echo "✅ CCACHE 编译缓存已启用" || echo "⚠️ CCACHE 未启用"
 
+      - name: 🩹 修复上游内核 patch 问题
+        run: |
+          set -euo pipefail
+          cd openwrt
+
+          # cpr4-apss-regulator.c:1767 将 const char* 赋值给 char*
+          # 触发 -Werror=discarded-qualifiers 导致编译失败
+          # 这是 OpenWrt main 分支的上游 bug，用 cast 修复
+          FILE="drivers/regulator/cpr4-apss-regulator.c"
+          FULL="build_dir/target-aarch64_cortex-a53_musl/linux-qualcommax_ipq60xx/linux-6.12.80/$FILE"
+
+          # 源文件在 package/kernel 之前还未解压，直接 patch 原始 .c（存在于 openwrt 仓库的 patch 目录）
+          # 用 sed 修复：找到第 1767 行附近的赋值，加 (char*) 强制转换
+          # 更稳妥的方式：在 target/linux/qualcommax/patches-6.12/ 加一个 patch 文件
+          PATCH_DIR="target/linux/qualcommax/patches-6.12"
+          mkdir -p "$PATCH_DIR"
+
+          # 用 printf 写 patch 文件，避免 heredoc 中 '---' 被 YAML 解析器误读
+          printf '%s\n' \
+            '--- a/drivers/regulator/cpr4-apss-regulator.c' \
+            '+++ b/drivers/regulator/cpr4-apss-regulator.c' \
+            '@@ -1764,7 +1764,7 @@ static int cpr4_apss_init_controller(struct cpr3_controller *ctrl)' \
+            ' 	if (rc)' \
+            ' 		return rc;' \
+            ' ' \
+            '-	ctrl->name = cpr3_thread->corner->desc->name;' \
+            '+	ctrl->name = (char *)cpr3_thread->corner->desc->name;' \
+            ' 	ctrl->sensor_count = ctrl->thread[0].part_count;' \
+            ' 	ctrl->sensor_owner = devm_kcalloc(ctrl->dev, ctrl->sensor_count,' \
+            ' 					  sizeof(*ctrl->sensor_owner), GFP_KERNEL);' \
+            > "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
+
+          # 验证 patch 能应用（dry-run），失败则直接 sed 替换
+          SRC="drivers/regulator/cpr4-apss-regulator.c"
+          if patch --dry-run -p1 < "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch" > /dev/null 2>&1; then
+            echo "✅ patch dry-run 通过，将由编译系统自动应用"
+          else
+            echo "⚠️ patch 行号偏差，改用 sed 直接替换源文件..."
+            sed -i 's/ctrl->name = cpr3_thread->corner->desc->name;/ctrl->name = (char *)cpr3_thread->corner->desc->name;/' "$SRC"
+            rm -f "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
+            echo "✅ sed 替换完成"
+          fi
+
       - name: ⬇️ 下载编译所需软件包
         run: |
           cd openwrt
@@ -292,23 +335,30 @@ jobs:
           cd openwrt
           echo "🔨 开始编译，CPU 核心数: $(nproc)..."
 
-          # 多线程编译，失败后自动提取真实报错
+          # 多线程编译，失败后自动单线程重跑内核定位真实错误行
           make -j$(nproc) V=s 2>&1 | tee build.log
-          if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+          MAKE_STATUS=${PIPESTATUS[0]}
+
+          if [ "$MAKE_STATUS" -eq 0 ]; then
             echo "status=success" >> "$GITHUB_OUTPUT"
             echo "✅ 编译成功！"
           else
             echo "status=failure" >> "$GITHUB_OUTPUT"
 
-            echo "========== 首个编译器报错（error:）=========="
-            grep -n " error:" build.log | head -20 || true
+            # 提取真正的编译器报错（小写 error: 才是编译器输出）
+            echo "========== 首个编译器报错 =========="
+            grep -n " error:" build.log | grep -v "^Binary" | head -30 || true
 
-            echo "========== 内核/模块错误行 =========="
-            grep -n "Error [0-9]\|error:" build.log | grep -v "^Binary\| error: 0" | head -30 || true
+            # 如果是内核失败，单线程重跑内核获取完整上下文
+            if grep -q "target/linux failed to build" build.log; then
+              echo "========== 单线程重跑内核获取完整报错 =========="
+              cd openwrt
+              make target/linux/compile -j1 V=s 2>&1 | grep -A5 " error:" | head -80 || true
+              cd ..
+            fi
 
-            echo "========== 日志末尾 100 行 =========="
-            tail -100 build.log
-
+            echo "========== 日志末尾 80 行 =========="
+            tail -80 build.log
             exit 1
           fi
 
