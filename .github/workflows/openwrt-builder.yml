@@ -283,43 +283,14 @@ jobs:
           set -euo pipefail
           cd openwrt
 
-          # cpr4-apss-regulator.c:1767 将 const char* 赋值给 char*
-          # 触发 -Werror=discarded-qualifiers 导致编译失败
-          # 这是 OpenWrt main 分支的上游 bug，用 cast 修复
-          FILE="drivers/regulator/cpr4-apss-regulator.c"
-          FULL="build_dir/target-aarch64_cortex-a53_musl/linux-qualcommax_ipq60xx/linux-6.12.80/$FILE"
-
-          # 源文件在 package/kernel 之前还未解压，直接 patch 原始 .c（存在于 openwrt 仓库的 patch 目录）
-          # 用 sed 修复：找到第 1767 行附近的赋值，加 (char*) 强制转换
-          # 更稳妥的方式：在 target/linux/qualcommax/patches-6.12/ 加一个 patch 文件
+          # cpr4-apss-regulator.c 将 const char* 赋值给 char*，触发 -Werror=discarded-qualifiers
+          # OpenWrt main 分支的上游 bug。patch 写入 patches-6.12/ 后，编译系统解压内核时自动应用。
+          # 用 base64 编码绕开 shell heredoc 和 YAML 特殊字符（---、冒号、引号）的所有冲突。
           PATCH_DIR="target/linux/qualcommax/patches-6.12"
           mkdir -p "$PATCH_DIR"
-
-          # 用 printf 写 patch 文件，避免 heredoc 中 '---' 被 YAML 解析器误读
-          printf '%s\n' \
-            '--- a/drivers/regulator/cpr4-apss-regulator.c' \
-            '+++ b/drivers/regulator/cpr4-apss-regulator.c' \
-            '@@ -1764,7 +1764,7 @@ static int cpr4_apss_init_controller(struct cpr3_controller *ctrl)' \
-            ' 	if (rc)' \
-            ' 		return rc;' \
-            ' ' \
-            '-	ctrl->name = cpr3_thread->corner->desc->name;' \
-            '+	ctrl->name = (char *)cpr3_thread->corner->desc->name;' \
-            ' 	ctrl->sensor_count = ctrl->thread[0].part_count;' \
-            ' 	ctrl->sensor_owner = devm_kcalloc(ctrl->dev, ctrl->sensor_count,' \
-            ' 					  sizeof(*ctrl->sensor_owner), GFP_KERNEL);' \
-            > "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
-
-          # 验证 patch 能应用（dry-run），失败则直接 sed 替换
-          SRC="drivers/regulator/cpr4-apss-regulator.c"
-          if patch --dry-run -p1 < "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch" > /dev/null 2>&1; then
-            echo "✅ patch dry-run 通过，将由编译系统自动应用"
-          else
-            echo "⚠️ patch 行号偏差，改用 sed 直接替换源文件..."
-            sed -i 's/ctrl->name = cpr3_thread->corner->desc->name;/ctrl->name = (char *)cpr3_thread->corner->desc->name;/' "$SRC"
-            rm -f "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
-            echo "✅ sed 替换完成"
-          fi
+          echo "LS0tIGEvZHJpdmVycy9yZWd1bGF0b3IvY3ByNC1hcHNzLXJlZ3VsYXRvci5jCisrKyBiL2RyaXZlcnMvcmVndWxhdG9yL2NwcjQtYXBzcy1yZWd1bGF0b3IuYwpAQCAtMTc2NCw3ICsxNzY0LDcgQEAgc3RhdGljIGludCBjcHI0X2Fwc3NfaW5pdF9jb250cm9sbGVyKHN0cnVjdCBjcHIzX2NvbnRyb2xsZXIgKmN0cmwpCiAJaWYgKHJjKQogCQlyZXR1cm4gcmM7CiAKLQljdHJsLT5uYW1lID0gY3ByM190aHJlYWQtPmNvcm5lci0+ZGVzYy0+bmFtZTsKKwljdHJsLT5uYW1lID0gKGNoYXIgKiljcHIzX3RocmVhZC0+Y29ybmVyLT5kZXNjLT5uYW1lOwogCWN0cmwtPnNlbnNvcl9jb3VudCA9IGN0cmwtPnRocmVhZFswXS5wYXJ0X2NvdW50OwogCWN0cmwtPnNlbnNvcl9vd25lciA9IGRldm1fa2NhbGxvYyhjdHJsLT5kZXYsIGN0cmwtPnNlbnNvcl9jb3VudCwKIAkJCQkJICBzaXplb2YoKmN0cmwtPnNlbnNvcl9vd25lciksIEdGUF9LRVJORUwpOwo=" | base64 -d > "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
+          echo "✅ patch 已写入："
+          cat "$PATCH_DIR/9999-fix-cpr4-const-qualifier.patch"
 
       - name: ⬇️ 下载编译所需软件包
         run: |
