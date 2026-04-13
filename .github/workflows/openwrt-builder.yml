@@ -318,7 +318,8 @@ jobs:
           path: |
             ${{ env.FIRMWARE_PATH }}/*.ubi
             ${{ env.FIRMWARE_PATH }}/*.itb
-            ${{ env.FIRMWARE_PATH }}/*.tar
+            ${{ env.FIRMWARE_PATH }}/*.bin
+            ${{ env.FIRMWARE_PATH }}/*.manifest
           retention-days: 7
           if-no-files-found: warn
 
@@ -331,6 +332,8 @@ jobs:
           files: |
             ${{ env.FIRMWARE_PATH }}/*.ubi
             ${{ env.FIRMWARE_PATH }}/*.itb
+            ${{ env.FIRMWARE_PATH }}/*.bin
+            ${{ env.FIRMWARE_PATH }}/*.manifest
           body: |
             ## 📦 OpenWrt for 360 V6
             - 分支: `${{ env.REPO_BRANCH }}` | Commit: `${{ env.OPENWRT_COMMIT }}`
@@ -351,6 +354,11 @@ jobs:
             1. 访问 `http://192.168.2.1` 设置密码
             2. LuCI → 网络 → DNSFilter 启用规则
             3. LuCI → 系统 → ZRAM 点击启用
+
+            ### 📌 刷机说明
+            - **首次刷入**：使用 `squashfs-factory.ubi`（breed 或原厂固件刷入）
+            - **在线升级**：使用 `squashfs-sysupgrade.bin`（LuCI → 系统 → 备份/升级）
+            - **救砖/测试**：使用 `initramfs-uImage.itb`（内存运行，断电消失）
           draft: false
           prerelease: false
         env:
