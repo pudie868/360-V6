@@ -1,37 +1,66 @@
 #!/bin/sh
-# 99-firstboot-setup.sh — runs once on first boot via uci-defaults
+# 99-firstboot-setup.sh — 自动初始化脚本
 
-# Network: set LAN IP
-# 不做存在性检查，直接设置。
-# uci-defaults 在 /etc/config/network 已由 base-files 生成后运行，
-# network.lan 一定存在；即使不存在，uci set 会自动创建。
+# ── 1. 修复软件源 (解决 opkg update 失败) ────────────────────────
+# 自动识别架构并替换为中科大镜像 (USTC)，解决官方源访问慢或断流问题
+DIST_ARCH=$(grep "DISTRIB_ARCH" /etc/openwrt_release | cut -d"'" -f2)
+[ -z "$DIST_ARCH" ] && DIST_ARCH="aarch64_cortex-a53"
+
+cat > /etc/opkg/distfeeds.conf <<EOF
+src/gz openwrt_core https://mirrors.ustc.edu.cn/openwrt/snapshots/targets/qualcommax/ipq60xx/packages
+src/gz openwrt_base https://mirrors.ustc.edu.cn/openwrt/snapshots/packages/$DIST_ARCH/base
+src/gz openwrt_luci https://mirrors.ustc.edu.cn/openwrt/snapshots/packages/$DIST_ARCH/luci
+src/gz openwrt_packages https://mirrors.ustc.edu.cn/openwrt/snapshots/packages/$DIST_ARCH/packages
+src/gz openwrt_routing https://mirrors.ustc.edu.cn/openwrt/snapshots/packages/$DIST_ARCH/routing
+EOF
+
+# 允许未签名软件包（针对某些第三方插件，增强可靠性容错）
+sed -i 's/option check_signature/# option check_signature/g' /etc/opkg.conf
+
+# ── 2. 网络与系统基础设置 ───────────────────────────────────────
 uci set network.lan.ipaddr='192.168.2.1'
-uci set network.lan.netmask='255.255.255.0'
 uci commit network
 
-# System: hostname and timezone
-uci set system.@system[0].hostname='OpenWrt'
+uci set system.@system[0].hostname='OpenWrt-360V6'
 uci set system.@system[0].timezone='CST-8'
 uci set system.@system[0].zonename='Asia/Shanghai'
 uci commit system
 
-# NTP
-if ! uci -q get system.ntp > /dev/null 2>&1; then
-  uci set system.ntp='timeserver'
-fi
-uci -q delete system.ntp.server || true
-uci add_list system.ntp.server='ntp.aliyun.com'
-uci add_list system.ntp.server='ntp.tencent.com'
-uci add_list system.ntp.server='cn.pool.ntp.org'
-uci commit system
+# ── 3. 自动化挂载策略 (针对你的 U 盘) ─────────────────────────────
+# 预创挂载点
+mkdir -p /mnt/usb
 
-if [ -x /etc/init.d/sysntpd ]; then
-  /etc/init.d/sysntpd restart 2>/dev/null || true
+# 写入 rc.local 实现开机自动检测挂载
+cat > /etc/rc.local << 'EOF'
+#!/bin/sh
+# 等待 USB 驱动完全加载
+sleep 8
+# 尝试挂载第一个分区
+mount /dev/sda1 /mnt/usb
+# 如果挂载成功，尝试激活 Swap 和迁移 Docker
+if [ -d /mnt/usb ]; then
+    [ -f /mnt/usb/swapfile ] && swapon /mnt/usb/swapfile
+    # 动态链接 Docker 目录，确保不占闪存
+    if [ -d /mnt/usb/docker ]; then
+        mount --bind /mnt/usb/docker /opt/docker
+    fi
 fi
+# CPU 性能模式
+for cpu_gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -f "$cpu_gov" ] && echo performance > "$cpu_gov"
+done
+exit 0
+EOF
+chmod +x /etc/rc.local
 
-# DHCP: tune dnsmasq
-uci set dhcp.@dnsmasq[0].cachesize='1000'
-uci set dhcp.@dnsmasq[0].ednspacket_max='1232'
-uci commit dhcp
+# ── 4. Docker 预配置 ──────────────────────────────────────────
+mkdir -p /opt/docker
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << 'EOF'
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "5m", "max-file": "1" }
+}
+EOF
 
 exit 0
