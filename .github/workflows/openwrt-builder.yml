@@ -31,7 +31,6 @@ jobs:
           sudo apt-get autoremove -y --purge && sudo apt-get clean
           sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
           df -h
-          # 使用 xargs 避免 $ 转义问题
           FREE_GB=$(df -BG / | tail -1 | xargs | cut -d' ' -f4 | tr -d 'G')
           echo "📊 当前可用空间: ${FREE_GB}GB"
           if [ "$FREE_GB" -lt 40 ]; then
@@ -49,12 +48,10 @@ jobs:
             swig unzip zlib1g-dev wget curl ca-certificates file golang-go \
             libelf-dev libncurses-dev zstd pkg-config ccache libzstd-dev
           sudo timedatectl set-timezone "$TZ"
-          # 配置 Git
           git config --global init.defaultBranch main
           git config --global pull.rebase false
           git config --global url."https://github.com/".insteadOf "git@github.com:"
           git config --global url."https://".insteadOf "git://"
-          # 启用 ccache
           mkdir -p /opt/ccache
           ccache -M 10G
           ccache -z
@@ -64,30 +61,23 @@ jobs:
           set -euo pipefail
           git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
           cd openwrt
-          echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          OPENWRT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+          echo "OPENWRT_COMMIT=${OPENWRT_COMMIT}" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
-          echo "📋 OpenWrt 信息:"
-          echo " - 分支: $REPO_BRANCH"
-          echo " - Commit: ${OPENWRT_COMMIT}"
+          echo "📋 OpenWrt 信息: 分支=$REPO_BRANCH, Commit=${OPENWRT_COMMIT}"
 
       - name: 📦 安装第三方插件
         run: |
           set -euo pipefail
           cd openwrt
-          # 下载函数（带重试和校验）
+
           gh_download() {
-            local url="\$1"
-            local dest="\$2"
-            local max_retries=3
-            local retry=0
-            local tmp
-            local success=false
-            while [ $retry -lt $max_retries ] && [ "$success" = false ]; do
-              tmp=$(mktemp /tmp/pkg_XXXXXX.tar.gz)
-              echo "📥 下载 (尝试 $((retry+1))/$max_retries): $url"
+            local url="\$1" dest="\$2" retry=0 success=false
+            while [ $retry -lt 3 ] && [ "$success" = false ]; do
+              local tmp=$(mktemp /tmp/pkg_XXXXXX.tar.gz)
+              echo "📥 下载 (尝试 $((retry+1))/3): $url"
               if curl -fSL --retry 3 --retry-delay 10 --connect-timeout 60 \
-                -H "User-Agent: GitHubActions/OpenWrtBuilder" \
-                -o "$tmp" "$url" 2>/dev/null; then
+                -H "User-Agent: GitHubActions/OpenWrtBuilder" -o "$tmp" "$url" 2>/dev/null; then
                 if [ -s "$tmp" ] && gzip -t "$tmp" 2>/dev/null; then
                   mkdir -p "$dest"
                   tar -xzf "$tmp" -C "$dest" --strip-components=1
@@ -95,253 +85,191 @@ jobs:
                   success=true
                   echo "✅ 安装完成: $dest"
                 else
-                  echo "❌ 文件校验失败: $url"
                   rm -f "$tmp"
                   retry=$((retry+1))
-                  [ $retry -lt $max_retries ] && sleep 5
+                  [ $retry -lt 3 ] && sleep 5
                 fi
               else
-                echo "❌ 下载失败: $url"
                 rm -f "$tmp"
                 retry=$((retry+1))
-                [ $retry -lt $max_retries ] && sleep 10
+                [ $retry -lt 3 ] && sleep 10
               fi
             done
             [ "$success" = false ] && return 1
           }
-          # ── luci-theme-argon ────────────────────────────────────
+
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
-          gh_download \
-            "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" \
-            "package/luci-theme-argon"
-          # ── homeproxy ───────────────────────────────────────────
+          gh_download "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" "package/luci-theme-argon"
+
           echo "📥 克隆 homeproxy..."
-          if [ -d "package/homeproxy" ]; then
-            echo "⚠️ homeproxy 已存在，跳过"
-          else
-            git clone --depth 1 --branch master --single-branch \
-              https://github.com/immortalwrt/homeproxy.git \
-              package/homeproxy \
-              || git clone --depth 1 \
-              https://github.com/immortalwrt/homeproxy.git \
-              package/homeproxy \
-              || { echo "❌ homeproxy 克隆失败"; exit 1; }
-          fi
-          echo "✅ homeproxy 安装完成"
-          # ── luci-app-lucky ─────────────────────────
+          [ -d "package/homeproxy" ] && echo "⚠️ 已存在，跳过" || \
+            git clone --depth 1 --branch master --single-branch https://github.com/immortalwrt/homeproxy.git package/homeproxy || \
+            git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy || exit 1
+          echo "✅ homeproxy 完成"
+
           echo "📥 克隆 luci-app-lucky..."
-          if [ -d "package/luci-app-lucky" ]; then
-            echo "⚠️ luci-app-lucky 已存在，跳过"
-          else
-            git clone --depth 1 \
-              https://github.com/gdy666/luci-app-lucky.git \
-              package/luci-app-lucky \
-              || { echo "❌ luci-app-lucky 克隆失败"; exit 1; }
-          fi
-          echo "✅ luci-app-lucky 安装完成"
-          # ── luci-app-filebrowser ────────────────────────────────
+          [ -d "package/luci-app-lucky" ] && echo "⚠️ 已存在，跳过" || \
+            git clone --depth 1 https://github.com/gdy666/luci-app-lucky.git package/luci-app-lucky || exit 1
+          echo "✅ luci-app-lucky 完成"
+
           echo "📥 克隆 luci-app-filebrowser..."
-          if [ -d "package/luci-app-filebrowser" ]; then
-            echo "⚠️ luci-app-filebrowser 已存在，跳过"
-          else
-            git clone --depth 1 \
-              https://github.com/xiaorouji/openwrt-filebrowser.git \
-              package/luci-app-filebrowser \
-              || echo "⚠️ filebrowser 克隆失败，跳过"
-          fi
-          echo "✅ luci-app-filebrowser 安装完成"
-          # ── kiddin9 插件包 ───────
-          echo "📥 克隆 kiddin9 插件集..."
-          if [ -d "package/kiddin9-packages" ]; then
-            echo "⚠️ kiddin9-packages 已存在，跳过"
-          else
-            if ! git clone --depth 1 \
-              https://github.com/kiddin9/openwrt-packages.git \
-              package/kiddin9-packages; then
-              echo "⚠️ kiddin9 克隆失败，将跳过部分插件"
-            else
-              echo "✅ kiddin9 插件集安装完成"
-            fi
-          fi
+          [ -d "package/luci-app-filebrowser" ] && echo "⚠️ 已存在，跳过" || \
+            git clone --depth 1 https://github.com/xiaorouji/openwrt-filebrowser.git package/luci-app-filebrowser || echo "⚠️ 跳过"
+          echo "✅ luci-app-filebrowser 完成"
+
+          echo "📥 克隆 kiddin9..."
+          [ -d "package/kiddin9-packages" ] && echo "⚠️ 已存在，跳过" || \
+            git clone --depth 1 https://github.com/kiddin9/openwrt-packages.git package/kiddin9-packages || echo "⚠️ 跳过"
+          echo "✅ kiddin9 完成"
 
       - name: 🔄 更新 Feeds
         run: |
           set -euo pipefail
           cd openwrt
-          if [ -f "feeds.conf.default" ]; then
-            grep -v "kiddin9" feeds.conf.default > feeds.conf.default.tmp || true
-            mv feeds.conf.default.tmp feeds.conf.default
-          fi
-          if ! grep -q "src-link" feeds.conf.default 2>/dev/null; then
-            echo "# OpenWrt base feeds" >> feeds.conf.default
-          fi
-          echo "📋 当前 feeds.conf.default:"
-          cat feeds.conf.default 2>/dev/null || echo "(空)"
-          # 更新 feeds
-          n=0
-          max_retries=3
-          until [ "$n" -ge $max_retries ]; do
-            echo "📥 Feeds 更新 (尝试 $((n+1))/$max_retries)..."
-            if ./scripts/feeds update -a 2>&1; then
-              echo "✅ Feeds 更新成功"
-              break
-            fi
+          [ -f "feeds.conf.default" ] && grep -v "kiddin9" feeds.conf.default > feeds.conf.default.tmp && mv feeds.conf.default.tmp feeds.conf.default
+          echo "📥 更新 Feeds..."
+          n=0; until [ "$n" -ge 3 ]; do
+            ./scripts/feeds update -a && break
             n=$((n+1))
-            if [ "$n" -lt $max_retries ]; then
-              wait_time=$((n * 15 + 10))
-              echo "⚠️ Feeds 更新失败，${wait_time}秒后重试..."
-              sleep $wait_time
-            fi
+            [ $n -lt 3 ] && sleep $((n * 15 + 10))
           done
-          [ "$n" -ge $max_retries ] && echo "⚠️ Feeds 更新失败，但继续..."
           echo "📥 安装 Feeds..."
-          ./scripts/feeds install -a || echo "⚠️ 部分 feeds 安装可能失败"
+          ./scripts/feeds install -a || echo "⚠️ 部分 feeds 安装失败"
 
-      - name: 📁 同步自定义配置文件
+      - name: 📁 同步自定义配置
         run: |
           cd openwrt
           if [ -d "../files" ]; then
-            echo "📦 同步 files/ 目录..."
             cp -rf ../files .
             mkdir -p files/etc/uci-defaults/ files/etc/sysctl.d/
-            [ -d "files/etc/uci-defaults" ] && chmod +x files/etc/uci-defaults/*.sh 2>/dev/null || true
-            [ -d "files/etc/sysctl.d" ] && chmod 644 files/etc/sysctl.d/*.conf 2>/dev/null || true
+            chmod +x files/etc/uci-defaults/*.sh 2>/dev/null || true
             echo "✅ 自定义配置已就绪"
           else
-            echo "⚠️ 未找到 files/ 目录，跳过配置注入"
+            echo "⚠️ 未找到 files/ 目录"
           fi
 
       - name: ⚙️ 生成 .config
         run: |
           set -euo pipefail
           cd openwrt
-          {
-            echo "CONFIG_TARGET_qualcommax=y"
-            echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
-            echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
-            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=200"
-            echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
-            echo "CONFIG_CCACHE=y"
-            echo "CONFIG_SSTRIP=y"
-            echo "CONFIG_TARGET_KERNEL_PARTSIZE=32"
-            echo "CONFIG_KERNEL_PERF_EVENTS=y"
-            echo "CONFIG_PACKAGE_kmod-cpufreq-dt=y"
-            echo "CONFIG_PACKAGE_kmod-cpufreq-dt-platdev=y"
-            echo "CONFIG_PACKAGE_cpufreq-utils=y"
-            echo "CONFIG_PACKAGE_luci=y"
-            echo "CONFIG_PACKAGE_luci-base=y"
-            echo "CONFIG_PACKAGE_luci-compat=y"
-            echo "CONFIG_PACKAGE_luci-lib-ipkg=y"
-            echo "CONFIG_PACKAGE_luci-ssl=y"
-            echo "CONFIG_PACKAGE_luci-theme-bootstrap=y"
-            echo "CONFIG_PACKAGE_luci-theme-argon=y"
-            echo "CONFIG_LUCI_LANG_zh-cn=y"
-            echo "CONFIG_LUCI_LANG_zh_Hans=y"
-            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y"
-            echo "CONFIG_PACKAGE_dnsmasq-full=y"
-            echo "# CONFIG_PACKAGE_dnsmasq is not set"
-            echo "CONFIG_PACKAGE_firewall4=y"
-            echo "CONFIG_PACKAGE_nftables=y"
-            echo "CONFIG_PACKAGE_kmod-nft-offload=y"
-            echo "CONFIG_PACKAGE_kmod-nft-nat=y"
-            echo "# CONFIG_PACKAGE_kmod-ipt-nat6 is not set"
-            echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set"
-            echo "# CONFIG_PACKAGE_iptables is not set"
-            echo "CONFIG_PACKAGE_opkg=y"
-            echo "CONFIG_PACKAGE_kmod-ath11k=y"
-            echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y"
-            echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y"
-            echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set"
-            echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set"
-            echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set"
-            echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
-            echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
-            echo "CONFIG_PACKAGE_sing-box=y"
-            echo "CONFIG_PACKAGE_luci-app-adguardhome=y"
-            echo "CONFIG_PACKAGE_adguardhome=y"
-            echo "CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-app-turboacc=y"
-            echo "CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y"
-            echo "CONFIG_PACKAGE_kmod-fast-classifier=y"
-            echo "CONFIG_PACKAGE_kmod-shortcut-fe=y"
-            echo "CONFIG_PACKAGE_kmod-shortcut-fe-drv=y"
-            echo "CONFIG_PACKAGE_luci-app-lucky=y"
-            echo "CONFIG_PACKAGE_lucky=y"
-            echo "CONFIG_PACKAGE_luci-app-filebrowser=y"
-            echo "CONFIG_PACKAGE_filebrowser=y"
-            echo "CONFIG_PACKAGE_docker=y"
-            echo "CONFIG_PACKAGE_dockerd=y"
-            echo "CONFIG_PACKAGE_luci-app-docker=y"
-            echo "CONFIG_PACKAGE_luci-app-dockerman=y"
-            echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y"
-            echo "CONFIG_PACKAGE_kmod-veth=y"
-            echo "CONFIG_PACKAGE_kmod-br-netfilter=y"
-            echo "CONFIG_PACKAGE_kmod-nft-bridge=y"
-            echo "CONFIG_PACKAGE_kmod-ipt-extra=y"
-            echo "CONFIG_PACKAGE_kmod-ipt-physdev=y"
-            echo "CONFIG_PACKAGE_kmod-lib-crc32c=y"
-            echo "CONFIG_PACKAGE_kmod-crypto-crc32c=y"
-            echo "CONFIG_PACKAGE_kmod-dm=y"
-            echo "CONFIG_PACKAGE_kmod-overlay=y"
-            echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
-            echo "CONFIG_PACKAGE_kmod-zram=y"
-            echo "CONFIG_PACKAGE_zram-swap=y"
-            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
-            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
-            echo "CONFIG_PACKAGE_kmod-usb-storage=y"
-            echo "CONFIG_PACKAGE_kmod-usb-storage-uas=y"
-            echo "CONFIG_PACKAGE_kmod-usb3=y"
-            echo "CONFIG_PACKAGE_kmod-fs-ext4=y"
-            echo "CONFIG_PACKAGE_kmod-fs-exfat=y"
-            echo "CONFIG_PACKAGE_kmod-fs-vfat=y"
-            echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y"
-            echo "CONFIG_PACKAGE_block-mount=y"
-            echo "CONFIG_PACKAGE_kmod-fuse=y"
-            echo "CONFIG_PACKAGE_e2fsprogs=y"
-            echo "CONFIG_PACKAGE_fdisk=y"
-            echo "CONFIG_PACKAGE_bash=y"
-            echo "CONFIG_PACKAGE_htop=y"
-            echo "CONFIG_PACKAGE_curl=y"
-            echo "CONFIG_PACKAGE_wget-ssl=y"
-            echo "CONFIG_PACKAGE_file=y"
-            echo "CONFIG_PACKAGE_lsblk=y"
-            echo "# CONFIG_PACKAGE_luci-app-dnsfilter is not set"
-            echo "# CONFIG_PACKAGE_luci-app-openclash is not set"
-            echo "# CONFIG_PACKAGE_luci-app-mosdns is not set"
-            echo "# CONFIG_PACKAGE_smartdns is not set"
-            echo "# CONFIG_PACKAGE_luci-app-samba4 is not set"
-            echo "# CONFIG_PACKAGE_xray-core is not set"
-            echo "# CONFIG_PACKAGE_hysteria is not set"
-            echo "# CONFIG_PACKAGE_naiveproxy is not set"
-            echo "# CONFIG_PACKAGE_tuic-client is not set"
-            echo "# CONFIG_PACKAGE_netdata is not set"
-            echo "# CONFIG_PACKAGE_vnstat2 is not set"
-          } > .config
+          echo 'CONFIG_TARGET_qualcommax=y
+CONFIG_TARGET_qualcommax_ipq60xx=y
+CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y
+CONFIG_TARGET_ROOTFS_PARTSIZE=200
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+CONFIG_CCACHE=y
+CONFIG_SSTRIP=y
+CONFIG_TARGET_KERNEL_PARTSIZE=32
+CONFIG_KERNEL_PERF_EVENTS=y
+CONFIG_PACKAGE_kmod-cpufreq-dt=y
+CONFIG_PACKAGE_kmod-cpufreq-dt-platdev=y
+CONFIG_PACKAGE_cpufreq-utils=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-compat=y
+CONFIG_PACKAGE_luci-lib-ipkg=y
+CONFIG_PACKAGE_luci-ssl=y
+CONFIG_PACKAGE_luci-theme-bootstrap=y
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_LUCI_LANG_zh-cn=y
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
+CONFIG_PACKAGE_dnsmasq-full=y
+# CONFIG_PACKAGE_dnsmasq is not set
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_nftables=y
+CONFIG_PACKAGE_kmod-nft-offload=y
+CONFIG_PACKAGE_kmod-nft-nat=y
+# CONFIG_PACKAGE_kmod-ipt-nat6 is not set
+# CONFIG_PACKAGE_kmod-ipt-nat is not set
+# CONFIG_PACKAGE_iptables is not set
+CONFIG_PACKAGE_opkg=y
+CONFIG_PACKAGE_kmod-ath11k=y
+CONFIG_PACKAGE_kmod-ath11k-ahb=y
+CONFIG_PACKAGE_ath11k-firmware-ipq6010=y
+# CONFIG_PACKAGE_kmod-ath11k-pci is not set
+# CONFIG_PACKAGE_kmod-ath10k-ct is not set
+# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set
+CONFIG_PACKAGE_luci-app-homeproxy=y
+CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y
+CONFIG_PACKAGE_sing-box=y
+CONFIG_PACKAGE_luci-app-adguardhome=y
+CONFIG_PACKAGE_adguardhome=y
+CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn=y
+CONFIG_PACKAGE_luci-app-turboacc=y
+CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y
+CONFIG_PACKAGE_kmod-fast-classifier=y
+CONFIG_PACKAGE_kmod-shortcut-fe=y
+CONFIG_PACKAGE_kmod-shortcut-fe-drv=y
+CONFIG_PACKAGE_luci-app-lucky=y
+CONFIG_PACKAGE_lucky=y
+CONFIG_PACKAGE_luci-app-filebrowser=y
+CONFIG_PACKAGE_filebrowser=y
+CONFIG_PACKAGE_docker=y
+CONFIG_PACKAGE_dockerd=y
+CONFIG_PACKAGE_luci-app-docker=y
+CONFIG_PACKAGE_luci-app-dockerman=y
+CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y
+CONFIG_PACKAGE_kmod-veth=y
+CONFIG_PACKAGE_kmod-br-netfilter=y
+CONFIG_PACKAGE_kmod-nft-bridge=y
+CONFIG_PACKAGE_kmod-ipt-extra=y
+CONFIG_PACKAGE_kmod-ipt-physdev=y
+CONFIG_PACKAGE_kmod-lib-crc32c=y
+CONFIG_PACKAGE_kmod-crypto-crc32c=y
+CONFIG_PACKAGE_kmod-dm=y
+CONFIG_PACKAGE_kmod-overlay=y
+CONFIG_PACKAGE_kmod-tcp-bbr=y
+CONFIG_PACKAGE_kmod-zram=y
+CONFIG_PACKAGE_zram-swap=y
+CONFIG_PACKAGE_luci-app-ttyd=y
+CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
+CONFIG_PACKAGE_kmod-usb-storage=y
+CONFIG_PACKAGE_kmod-usb-storage-uas=y
+CONFIG_PACKAGE_kmod-usb3=y
+CONFIG_PACKAGE_kmod-fs-ext4=y
+CONFIG_PACKAGE_kmod-fs-exfat=y
+CONFIG_PACKAGE_kmod-fs-vfat=y
+CONFIG_PACKAGE_kmod-fs-ntfs3=y
+CONFIG_PACKAGE_block-mount=y
+CONFIG_PACKAGE_kmod-fuse=y
+CONFIG_PACKAGE_e2fsprogs=y
+CONFIG_PACKAGE_fdisk=y
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_htop=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_wget-ssl=y
+CONFIG_PACKAGE_file=y
+CONFIG_PACKAGE_lsblk=y
+# CONFIG_PACKAGE_luci-app-dnsfilter is not set
+# CONFIG_PACKAGE_luci-app-openclash is not set
+# CONFIG_PACKAGE_luci-app-mosdns is not set
+# CONFIG_PACKAGE_smartdns is not set
+# CONFIG_PACKAGE_luci-app-samba4 is not set
+# CONFIG_PACKAGE_xray-core is not set
+# CONFIG_PACKAGE_hysteria is not set
+# CONFIG_PACKAGE_naiveproxy is not set
+# CONFIG_PACKAGE_tuic-client is not set
+# CONFIG_PACKAGE_netdata is not set
+# CONFIG_PACKAGE_vnstat2 is not set' > .config
           make defconfig
-          # 验证设备配置
-          if ! grep -q "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-            echo "CONFIG_TARGET_qualcommax=y" >> .config
-            echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-            echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
-          fi
           echo "✅ .config 生成完成"
 
-      - name: 🩹 清理失效的内核 patch
+      - name: 🩹 清理失效 patch
         run: |
           cd openwrt
           rm -f target/linux/qualcommax/patches-*/9999-fix-cpr4-const-qualifier.patch 2>/dev/null || true
-          echo "✅ 旧 patch 清理完成"
+          echo "✅ patch 清理完成"
 
-      - name: ⬇️ 下载编译所需软件包
+      - name: ⬇️ 下载软件包
         run: |
           set -euo pipefail
           cd openwrt
           echo "📥 开始下载软件包..."
           make download -j$(nproc) 2>&1 | tail -20 || make download -j1
           find dl -size -1c -exec rm -f {} \; 2>/dev/null || true
-          find dl -size 0 -exec rm -f {} \; 2>/dev/null || true
           echo "✅ 下载完成"
 
       - name: 🔨 编译固件
@@ -366,7 +294,7 @@ jobs:
             exit 1
           fi
 
-      - name: 📦 整理固件文件
+      - name: 📦 整理固件
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/bin/targets/*/*
@@ -374,7 +302,7 @@ jobs:
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
           ls -lh
 
-      - name: 📤 上传固件到 Artifacts
+      - name: 📤 上传固件
         if: ${{ steps.compile.outputs.status == 'success' }}
         uses: actions/upload-artifact@v4
         with:
@@ -387,7 +315,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-      - name: 🚀 发布到 Release
+      - name: 🚀 发布 Release
         if: ${{ steps.compile.outputs.status == 'success' }}
         uses: softprops/action-gh-release@v2
         with:
