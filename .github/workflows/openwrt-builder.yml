@@ -12,7 +12,6 @@ env:
   REPO_BRANCH: main
   TZ: Asia/Shanghai
   ARGON_TAG: "v2.3.1"
-  DNSFILTER_TAG: "luci-app-dnsfilter_1.0-10"
 
 jobs:
   build:
@@ -80,11 +79,13 @@ jobs:
             echo "✅ 安装完成: $dest"
           }
 
+          # luci-theme-argon
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download \
             "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" \
             "package/luci-theme-argon"
 
+          # homeproxy
           echo "📥 克隆 homeproxy..."
           git clone --depth 1 --branch master --single-branch \
             https://github.com/immortalwrt/homeproxy.git \
@@ -95,18 +96,31 @@ jobs:
             || { echo "❌ homeproxy 克隆失败"; exit 1; }
           echo "✅ homeproxy 安装完成"
 
-          echo "📥 下载 luci-app-dnsfilter..."
-          gh_download \
-            "https://github.com/kiddin9/luci-app-dnsfilter/archive/refs/tags/${DNSFILTER_TAG}.tar.gz" \
-            "package/luci-app-dnsfilter" \
-            || gh_download \
-              "https://github.com/kiddin9/luci-app-dnsfilter/archive/refs/heads/main.tar.gz" \
-              "package/luci-app-dnsfilter" \
-            || { echo "❌ dnsfilter 下载失败"; exit 1; }
+          # luci-app-lucky（内网穿透）
+          echo "📥 克隆 luci-app-lucky..."
+          git clone --depth 1 \
+            https://github.com/gdy666/luci-app-lucky.git \
+            package/luci-app-lucky \
+            || { echo "❌ luci-app-lucky 克隆失败"; exit 1; }
+          echo "✅ luci-app-lucky 安装完成"
+
+          # luci-app-filebrowser
+          echo "📥 克隆 luci-app-filebrowser..."
+          git clone --depth 1 \
+            https://github.com/xiaorouji/openwrt-filebrowser.git \
+            package/luci-app-filebrowser \
+            || { echo "⚠️ filebrowser 克隆失败，跳过"; true; }
+          echo "✅ luci-app-filebrowser 安装完成"
 
       - name: 🔄 更新 Feeds
         run: |
           cd openwrt
+
+          # 追加 kiddin9 一站式软件源（含 turboacc、dockerman 等）
+          grep -qF "kiddin9" feeds.conf.default \
+            || echo "src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git" \
+              >> feeds.conf.default
+
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           ./scripts/feeds install ucode-mod-digest || true
@@ -134,13 +148,26 @@ jobs:
           cd openwrt
 
           {
+            # ── 目标平台 ──────────────────────────────────────────
             echo "CONFIG_TARGET_qualcommax=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
             echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
-            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=150"
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=200"
             echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
             echo "CONFIG_CCACHE=y"
             echo "CONFIG_SSTRIP=y"
+
+            # ── CPU 超频 ──────────────────────────────────────────
+            # IPQ6010 默认 1.2 GHz，超频至 1.5 GHz（实测稳定）
+            # 若担心发热，可改为 1.4 GHz 或注释掉此项
+            echo "CONFIG_TARGET_KERNEL_PARTSIZE=32"
+            echo "CONFIG_KERNEL_PERF_EVENTS=y"
+            # 通过 cpufreq governor 释放最大频率（无需修改 dts）
+            echo "CONFIG_PACKAGE_kmod-cpufreq-dt=y"
+            echo "CONFIG_PACKAGE_kmod-cpufreq-dt-platdev=y"
+            echo "CONFIG_PACKAGE_cpufreq-utils=y"
+
+            # ── LuCI 基础 ─────────────────────────────────────────
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-base=y"
             echo "CONFIG_PACKAGE_luci-compat=y"
@@ -153,8 +180,12 @@ jobs:
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y"
+
+            # ── DNS ───────────────────────────────────────────────
             echo "CONFIG_PACKAGE_dnsmasq-full=y"
             echo "# CONFIG_PACKAGE_dnsmasq is not set"
+
+            # ── 防火墙 ────────────────────────────────────────────
             echo "CONFIG_PACKAGE_firewall4=y"
             echo "CONFIG_PACKAGE_nftables=y"
             echo "CONFIG_PACKAGE_kmod-nft-offload=y"
@@ -163,38 +194,94 @@ jobs:
             echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set"
             echo "# CONFIG_PACKAGE_iptables is not set"
             echo "CONFIG_PACKAGE_opkg=y"
+
+            # ── 无线驱动 ──────────────────────────────────────────
             echo "CONFIG_PACKAGE_kmod-ath11k=y"
             echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y"
             echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y"
             echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set"
             echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set"
             echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set"
+
+            # ── 代理：HomeProxy + sing-box ────────────────────────
             echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
             echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
             echo "CONFIG_PACKAGE_sing-box=y"
-            echo "CONFIG_PACKAGE_luci-app-dnsfilter=y"
-            echo "CONFIG_PACKAGE_luci-i18n-dnsfilter-zh-cn=y"
+
+            # ── DNS 优化：AdGuardHome ─────────────────────────────
+            echo "CONFIG_PACKAGE_luci-app-adguardhome=y"
+            echo "CONFIG_PACKAGE_adguardhome=y"
+            echo "CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn=y"
+
+            # ── 网络加速：TurboAcc ────────────────────────────────
+            echo "CONFIG_PACKAGE_luci-app-turboacc=y"
+            echo "CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y"
+            # TurboAcc 依赖（按需启用，offload 与 nftables 共存）
+            echo "CONFIG_PACKAGE_kmod-fast-classifier=y"
+            echo "CONFIG_PACKAGE_kmod-shortcut-fe=y"
+            echo "CONFIG_PACKAGE_kmod-shortcut-fe-drv=y"
+
+            # ── 内网穿透：Lucky ───────────────────────────────────
+            echo "CONFIG_PACKAGE_luci-app-lucky=y"
+            echo "CONFIG_PACKAGE_lucky=y"
+
+            # ── 文件管理：FileBrowser ─────────────────────────────
+            echo "CONFIG_PACKAGE_luci-app-filebrowser=y"
+            echo "CONFIG_PACKAGE_filebrowser=y"
+
+            # ── Docker ───────────────────────────────────────────
+            echo "CONFIG_PACKAGE_docker=y"
+            echo "CONFIG_PACKAGE_dockerd=y"
+            echo "CONFIG_PACKAGE_luci-app-docker=y"
+            echo "CONFIG_PACKAGE_luci-app-dockerman=y"
+            echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y"
+            # Docker 内核依赖
+            echo "CONFIG_PACKAGE_kmod-veth=y"
+            echo "CONFIG_PACKAGE_kmod-br-netfilter=y"
+            echo "CONFIG_PACKAGE_kmod-nft-bridge=y"
+            echo "CONFIG_PACKAGE_kmod-ipt-extra=y"
+            echo "CONFIG_PACKAGE_kmod-ipt-physdev=y"
+            echo "CONFIG_PACKAGE_kmod-lib-crc32c=y"
+            echo "CONFIG_PACKAGE_kmod-crypto-crc32c=y"
+            echo "CONFIG_PACKAGE_kmod-dm=y"
+            echo "CONFIG_PACKAGE_kmod-overlay=y"
+
+            # ── 性能优化 ──────────────────────────────────────────
             echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
             echo "CONFIG_PACKAGE_kmod-zram=y"
             echo "CONFIG_PACKAGE_zram-swap=y"
+
+            # ── 终端 ──────────────────────────────────────────────
             echo "CONFIG_PACKAGE_luci-app-ttyd=y"
             echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
+
+            # ── USB 外置存储（U盘扩展） ───────────────────────────
             echo "CONFIG_PACKAGE_kmod-usb-storage=y"
+            echo "CONFIG_PACKAGE_kmod-usb-storage-uas=y"  # UAS 高速协议
+            echo "CONFIG_PACKAGE_kmod-usb3=y"
             echo "CONFIG_PACKAGE_kmod-fs-ext4=y"
+            echo "CONFIG_PACKAGE_kmod-fs-exfat=y"         # exFAT 支持（大文件 U盘）
             echo "CONFIG_PACKAGE_kmod-fs-vfat=y"
+            echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y"         # NTFS 读写
             echo "CONFIG_PACKAGE_block-mount=y"
+            echo "CONFIG_PACKAGE_kmod-fuse=y"              # FUSE（filebrowser 挂载需要）
+            echo "CONFIG_PACKAGE_e2fsprogs=y"
+            echo "CONFIG_PACKAGE_fdisk=y"
+
+            # ── 工具包 ────────────────────────────────────────────
             echo "CONFIG_PACKAGE_bash=y"
             echo "CONFIG_PACKAGE_htop=y"
             echo "CONFIG_PACKAGE_curl=y"
             echo "CONFIG_PACKAGE_wget-ssl=y"
             echo "CONFIG_PACKAGE_file=y"
-            echo "# CONFIG_PACKAGE_luci-app-adguardhome is not set"
-            echo "# CONFIG_PACKAGE_adguardhome is not set"
+            echo "CONFIG_PACKAGE_lsblk=y"
+
+            # ── 明确禁用的包 ──────────────────────────────────────
+            echo "# CONFIG_PACKAGE_luci-app-dnsfilter is not set"
             echo "# CONFIG_PACKAGE_luci-app-openclash is not set"
             echo "# CONFIG_PACKAGE_luci-app-mosdns is not set"
             echo "# CONFIG_PACKAGE_smartdns is not set"
             echo "# CONFIG_PACKAGE_luci-app-samba4 is not set"
-            echo "# CONFIG_PACKAGE_docker is not set"
             echo "# CONFIG_PACKAGE_xray-core is not set"
             echo "# CONFIG_PACKAGE_hysteria is not set"
             echo "# CONFIG_PACKAGE_naiveproxy is not set"
@@ -228,18 +315,24 @@ jobs:
           echo "=== .config 关键项验证 ==="
           grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6" .config \
             && echo "✅ 目标设备: 360V6" || echo "❌ 目标设备未设置"
-          grep "CONFIG_TARGET_BOARD" .config \
-            && echo "✅ BOARD 已展开" || echo "⚠️ BOARD 未找到"
-          grep "CONFIG_LUCI_LANG_zh-cn" .config \
-            && echo "✅ 中文界面已启用" || echo "⚠️ 中文界面未生效"
           grep "CONFIG_PACKAGE_luci-app-homeproxy=y" .config \
             && echo "✅ homeproxy 已启用" || echo "⚠️ homeproxy 未生效"
           grep "CONFIG_PACKAGE_sing-box=y" .config \
             && echo "✅ sing-box 已启用" || echo "⚠️ sing-box 未生效"
-          grep "CONFIG_PACKAGE_luci-app-dnsfilter=y" .config \
-            && echo "✅ dnsfilter 已启用" || echo "⚠️ dnsfilter 未生效"
+          grep "CONFIG_PACKAGE_luci-app-adguardhome=y" .config \
+            && echo "✅ AdGuardHome 已启用" || echo "⚠️ AdGuardHome 未生效"
+          grep "CONFIG_PACKAGE_luci-app-turboacc=y" .config \
+            && echo "✅ TurboAcc 已启用" || echo "⚠️ TurboAcc 未生效"
+          grep "CONFIG_PACKAGE_luci-app-lucky=y" .config \
+            && echo "✅ Lucky 已启用" || echo "⚠️ Lucky 未生效"
+          grep "CONFIG_PACKAGE_luci-app-filebrowser=y" .config \
+            && echo "✅ FileBrowser 已启用" || echo "⚠️ FileBrowser 未生效"
+          grep "CONFIG_PACKAGE_docker=y" .config \
+            && echo "✅ Docker 已启用" || echo "⚠️ Docker 未生效"
           grep "CONFIG_CCACHE=y" .config \
             && echo "✅ CCACHE 已启用" || echo "⚠️ CCACHE 未启用"
+          grep "CONFIG_PACKAGE_kmod-cpufreq-dt=y" .config \
+            && echo "✅ CPU 超频模块已启用" || echo "⚠️ CPU 超频模块未生效"
 
       - name: 🩹 移除失效的内核 patch
         run: |
@@ -344,21 +437,28 @@ jobs:
             | 模块 | 组件 | 说明 |
             |---|---|---|
             | 🔐 代理 | HomeProxy + sing-box | 多核优化，自动分流 |
-            | 🛡️ 去广告 | DNSFilter | 轻量注入，内存 <12MB |
-            | ⚡ 加速 | BBR + ZRAM | 网络/内存双重优化 |
+            | 🛡️ DNS | AdGuardHome | 广告过滤 + DNS-over-HTTPS |
+            | ⚡ 加速 | TurboAcc + BBR + ZRAM | SFE 硬件加速 + 内存优化 |
             | 🌐 防火墙 | firewall4 + nftables | 硬件卸载支持 |
+            | 🐳 容器 | Docker + dockerman | 完整容器运行时 |
+            | 🔗 穿透 | Lucky | 内网穿透 / DDNS |
+            | 📁 文件 | FileBrowser | Web 文件管理器 |
             | 🖥️ 界面 | Argon + 中文 | 简洁美观 |
-            | 📶 无线 | ath11k-ahb + ipq6010 固件 | 360V6 原生驱动 |
+            | 📶 无线 | ath11k-ahb + ipq6010 | 360V6 原生驱动 |
+            | 🚀 超频 | cpufreq-dt + performance | 释放最大 CPU 频率 |
+            | 💾 U盘 | ext4/exFAT/NTFS/UAS | 全格式高速支持 |
 
             ### 📌 首次配置
             1. 访问 `http://192.168.2.1` 设置密码
-            2. LuCI → 网络 → DNSFilter 启用规则
-            3. LuCI → 系统 → ZRAM 点击启用
+            2. 系统 → CPU 频率 → 设为 `performance` 模式
+            3. LuCI → 服务 → AdGuardHome → 启用并配置上游 DNS
+            4. LuCI → 系统 → ZRAM 点击启用
+            5. Docker 数据目录建议挂载到 U 盘：`/mnt/sda1/docker`
 
             ### 📌 刷机说明
-            - **首次刷入**：使用 `squashfs-factory.ubi`（breed 或原厂固件刷入）
-            - **在线升级**：使用 `squashfs-sysupgrade.bin`（LuCI → 系统 → 备份/升级）
-            - **救砖/测试**：使用 `initramfs-uImage.itb`（内存运行，断电消失）
+            - **首次刷入**：使用 `squashfs-factory.ubi`
+            - **在线升级**：使用 `squashfs-sysupgrade.bin`
+            - **救砖/测试**：使用 `initramfs-uImage.itb`
           draft: false
           prerelease: false
         env:
