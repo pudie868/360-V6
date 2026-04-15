@@ -1,311 +1,414 @@
 name: Build OpenWrt for 360 V6
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - '.github/workflows/openwrt-builder.yml'
+ workflow_dispatch:
+ push:
+   branches:
+     - main
+     - master
+   paths:
+     - '.github/workflows/openwrt-builder.yml'
 env:
-  REPO_URL: https://github.com/openwrt/openwrt
-  REPO_BRANCH: main
-  TZ: Asia/Shanghai
-  ARGON_TAG: "v2.3.1"
+ REPO_URL: https://github.com/openwrt/openwrt
+ REPO_BRANCH: main
+ TZ: Asia/Shanghai
+ ARGON_TAG: "v2.3.1"
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          path: workspace
+ build:
+   runs-on: ubuntu-22.04
+   timeout-minutes: 360
+   permissions:
+     contents: write
+   steps:
+     - name: Checkout
+       uses: actions/checkout@v4
+       with:
+         path: workspace
 
-      - name: Free disk space
-        run: |
-          set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/local/share/boost /usr/share/swift /usr/local/.ghcup /usr/lib/jvm
-          sudo docker system prune -af --volumes 2>/dev/null || true
-          sudo apt-get autoremove -y --purge && sudo apt-get clean
-          sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
-          df -h
-          FREE_GB=$(df -BG / | tail -1 | xargs | cut -d' ' -f4 | tr -d 'G')
-          echo "Available space: ${FREE_GB}GB"
-          if [ "$FREE_GB" -lt 40 ]; then echo "Error: Less than 40GB"; exit 1; fi
+     - name: Free disk space
+       run: |
+         set -euo pipefail
+         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+         sudo rm -rf /usr/local/share/boost /usr/share/swift /usr/local/.ghcup /usr/lib/jvm
+         sudo docker system prune -af --volumes 2>/dev/null || true
+         sudo apt-get autoremove -y --purge && sudo apt-get clean
+         sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
+         df -h
+         FREE_GB=$(df -BG / | tail -1 | xargs | cut -d' ' -f4 | tr -d 'G')
+         echo "Available space: ${FREE_GB}GB"
+         if [ "$FREE_GB" -lt 40 ]; then echo "Error: Less than 40GB"; exit 1; fi
 
-      - name: Install build dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip rsync swig unzip zlib1g-dev wget curl ca-certificates file golang-go libelf-dev libncurses-dev zstd pkg-config ccache libzstd-dev
-          sudo timedatectl set-timezone "$TZ"
-          git config --global init.defaultBranch main
-          git config --global pull.rebase false
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          mkdir -p /opt/ccache
-          ccache -M 10G
-          ccache -z
+     - name: Install build dependencies
+       run: |
+         set -euo pipefail
+         sudo apt-get update
+         sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip rsync swig unzip zlib1g-dev wget curl ca-certificates file golang-go libelf-dev libncurses-dev zstd pkg-config ccache libzstd-dev
+         sudo timedatectl set-timezone "$TZ"
+         git config --global init.defaultBranch main
+         git config --global pull.rebase false
+         git config --global url."https://github.com/".insteadOf "git@github.com:"
+         mkdir -p /opt/ccache
+         ccache -M 10G
+         ccache -z
 
-      - name: Clone OpenWrt source
-        run: |
-          set -euo pipefail
-          git clone --depth 1 -b $REPO_BRANCH $REPO_URL workspace/openwrt
-          cd workspace/openwrt
-          OPENWRT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-          echo "OPENWRT_COMMIT=${OPENWRT_COMMIT}" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
-          echo "Branch=$REPO_BRANCH, Commit=${OPENWRT_COMMIT}"
+     - name: Clone OpenWrt source
+       run: |
+         set -euo pipefail
+         git clone --depth 1 -b $REPO_BRANCH $REPO_URL workspace/openwrt
+         cd workspace/openwrt
+         OPENWRT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+         echo "OPENWRT_COMMIT=${OPENWRT_COMMIT}" >> $GITHUB_ENV
+         echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
+         echo "Branch=$REPO_BRANCH, Commit=${OPENWRT_COMMIT}"
 
-      - name: Install third-party plugins
-        run: |
-          set -euo pipefail
-          cd workspace/openwrt
-          echo "Downloading luci-theme-argon..."
-          curl -fSL --retry 3 --retry-delay 10 --connect-timeout 60 -H "User-Agent: GitHubActions/OpenWrtBuilder" -o /tmp/argon.tar.gz "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" && mkdir -p package/luci-theme-argon && tar -xzf /tmp/argon.tar.gz -C package/luci-theme-argon --strip-components=1 && rm -f /tmp/argon.tar.gz && echo "Done: argon" || echo "Skip: argon"
-          echo "Cloning homeproxy..."
-          git clone --depth 1 --branch master --single-branch https://github.com/immortalwrt/homeproxy.git package/homeproxy 2>/dev/null || git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy 2>/dev/null || true
-          echo "Done: homeproxy"
-          echo "Cloning luci-app-lucky..."
-          git clone --depth 1 https://github.com/gdy666/luci-app-lucky.git package/luci-app-lucky 2>/dev/null || true
-          echo "Done: luci-app-lucky"
-          echo "Cloning luci-app-filebrowser..."
-          git clone --depth 1 https://github.com/xiaorouji/openwrt-filebrowser.git package/luci-app-filebrowser 2>/dev/null || true
-          echo "Done: filebrowser"
-          echo "Cloning kiddin9..."
-          git clone --depth 1 https://github.com/kiddin9/openwrt-packages.git package/kiddin9-packages 2>/dev/null || true
-          echo "Done: kiddin9"
+     - name: Install third-party plugins
+       run: |
+         set -euo pipefail
+         cd workspace/openwrt
+         echo "Downloading luci-theme-argon..."
+         curl -fSL --retry 3 --retry-delay 10 --connect-timeout 60 -H "User-Agent: GitHubActions/OpenWrtBuilder" -o /tmp/argon.tar.gz "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" && mkdir -p package/luci-theme-argon && tar -xzf /tmp/argon.tar.gz -C package/luci-theme-argon --strip-components=1 && rm -f /tmp/argon.tar.gz && echo "Done: argon" || echo "Skip: argon"
+         echo "Cloning homeproxy..."
+         git clone --depth 1 --branch master --single-branch https://github.com/immortalwrt/homeproxy.git package/homeproxy 2>/dev/null || git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy 2>/dev/null || true
+         echo "Done: homeproxy"
+         echo "Cloning luci-app-lucky..."
+         git clone --depth 1 https://github.com/gdy666/luci-app-lucky.git package/luci-app-lucky 2>/dev/null || true
+         echo "Done: luci-app-lucky"
+         echo "Cloning luci-app-filebrowser..."
+         git clone --depth 1 https://github.com/xiaorouji/openwrt-filebrowser.git package/luci-app-filebrowser 2>/dev/null || true
+         echo "Done: filebrowser"
+         echo "Cloning kiddin9..."
+         git clone --depth 1 https://github.com/kiddin9/openwrt-packages.git package/kiddin9-packages 2>/dev/null || true
+         echo "Done: kiddin9"
 
-      - name: Update Feeds
-        run: |
-          set -euo pipefail
-          cd workspace/openwrt
-          n=0; until [ "$n" -ge 3 ]; do ./scripts/feeds update -a && break; n=$((n+1)); [ $n -lt 3 ] && sleep $((n * 15 + 10)); done
-          ./scripts/feeds install -a || echo "Some feeds install failed"
+     - name: Update Feeds
+       run: |
+         set -euo pipefail
+         cd workspace/openwrt
+         n=0
+         until [ "$n" -ge 3 ]; do
+           ./scripts/feeds update -a && break
+           n=$((n+1))
+           [ $n -lt 3 ] && sleep $((n * 15 + 10))
+         done
+         ./scripts/feeds install -a || echo "Some feeds install failed"
 
-      - name: Create custom config files
-        run: |
-          set -euo pipefail
-          cd workspace/openwrt
-          mkdir -p files/etc/config files/etc/sysctl.d files/etc/uci-defaults
-          # Create network config
-          printf '%s\n' "config interface 'loopback'" "option device 'lo'" "option proto 'static'" "option ipaddr '127.0.0.1'" "option netmask '255.0.0.0'" "" "config interface 'lan'" "option device 'br-lan'" "option proto 'static'" "option ipaddr '192.168.2.1'" "option netmask '255.255.255.0'" "option ip6assign '60'" "" "config interface 'wan'" "option device 'eth1'" "option proto 'dhcp'" "" "config interface 'wan6'" "option device 'eth1'" "option proto 'dhcpv6'" > files/etc/config/network
-          echo "Created: network"
-          # Create dhcp config
-          printf '%s\n' "config dnsmasq" "option domainneeded '1'" "option localise_queries '1'" "option rebind_protection '1'" "option rebind_localhost '1'" "option local '/lan/'" "option domain 'lan'" "option expandhosts '1'" "option authoritative '1'" "option readethers '1'" "option leasefile '/tmp/dhcp.leases'" "option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'" "option localservice '1'" "" "config dhcp 'lan'" "option interface 'lan'" "option start '100'" "option limit '150'" "option leasetime '12h'" "option force '1'" "" "config dhcp 'wan'" "option interface 'wan'" "option ignore '1'" "" "config odhcpd 'odhcpd'" "option maindhcp '0'" "option leasefile '/tmp/dhcp.leases'" "option leasetrigger '/usr/sbin/odhcpd-update'" "option loglevel '4'" > files/etc/config/dhcp
-          echo "Created: dhcp"
-          # Create firewall config
-          printf '%s\n' "config defaults" "option input 'ACCEPT'" "option output 'ACCEPT'" "option forward 'ACCEPT'" "option synflood_protect '1'" "" "config zone" "option name 'lan'" "option input 'ACCEPT'" "option output 'ACCEPT'" "option forward 'ACCEPT'" "list network 'lan'" "" "config zone" "option name 'wan'" "option input 'ACCEPT'" "option output 'ACCEPT'" "option forward 'REJECT'" "option masq '1'" "option mtu_fix '1'" "list network 'wan'" "list network 'wan6'" "" "config forwarding" "option src 'lan'" "option dest 'wan'" > files/etc/config/firewall
-          echo "Created: firewall"
-          # Create uci-defaults script
-          printf '%s\n' "#!/bin/sh" "/etc/init.d/network restart" "/etc/init.d/dnsmasq restart" "/etc/init.d/firewall restart" "/etc/init.d/system restart" "/etc/init.d/dnsmasq enable" "/etc/init.d/firewall enable" "DIST_ARCH=$(cat /etc/openwrt_release | grep DISTRIB_ARCH | cut -d\"'\" -f2)" "[ -z \"$DIST_ARCH\" ] && DIST_ARCH=\"aarch64_cortex-a53\"" "printf '%s\n' \"src/gz openwrt_core https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/targets/qualcommax/ipq60xx/packages\" \"src/gz openwrt_base https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/base\" \"src/gz openwrt_luci https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/luci\" \"src/gz openwrt_packages https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/packages\" \"src/gz openwrt_routing https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/routing\" > /etc/opkg/distfeeds.conf" "sed -i 's/option check_signature/option check_signature 0/g' /etc/opkg.conf 2>/dev/null" "/etc/init.d/dnsfilter disable 2>/dev/null" "for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -f \"$f\" ] && echo performance > \"$f\" 2>/dev/null; done" "exit 0" > files/etc/uci-defaults/99-custom
-          chmod +x files/etc/uci-defaults/99-custom
-          echo "Created: uci-defaults"
-          # Create sysctl config
-          printf '%s\n' "net.core.default_qdisc=fq" "net.ipv4.tcp_congestion_control=bbr" "net.ipv4.tcp_slow_start_after_idle=0" "net.ipv4.tcp_tw_reuse=2" "net.ipv4.tcp_max_syn_backlog=8192" "net.ipv4.ip_forward=1" "net.bridge.bridge-nf-call-iptables=1" "net.bridge.bridge-nf-call-ip6tables=1" "net.netfilter.nf_conntrack_max=131072" "net.netfilter.nf_conntrack_tcp_timeout_established=3600" > files/etc/sysctl.d/99-custom.conf
-          echo "Created: sysctl"
-          echo "=== Config files created ==="
-          find files -type f
-          echo "==========================="
+     - name: Create custom config files
+       run: |
+         set -euo pipefail
+         cd workspace/openwrt
+         mkdir -p files/etc/config files/etc/sysctl.d files/etc/uci-defaults
 
-      - name: Generate .config
-        run: |
-          set -euo pipefail
-          cd workspace/openwrt
-          echo "CONFIG_TARGET_qualcommax=y" > .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
-          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=200" >> .config
-          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
-          echo "CONFIG_CCACHE=y" >> .config
-          echo "CONFIG_SSTRIP=y" >> .config
-          echo "CONFIG_TARGET_KERNEL_PARTSIZE=32" >> .config
-          echo "CONFIG_KERNEL_PERF_EVENTS=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-cpufreq-dt=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-cpufreq-dt-platdev=y" >> .config
-          echo "CONFIG_PACKAGE_cpufreq-utils=y" >> .config
-          echo "CONFIG_PACKAGE_luci=y" >> .config
-          echo "CONFIG_PACKAGE_luci-base=y" >> .config
-          echo "CONFIG_PACKAGE_luci-compat=y" >> .config
-          echo "CONFIG_PACKAGE_luci-lib-ipkg=y" >> .config
-          echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
-          echo "CONFIG_PACKAGE_luci-theme-bootstrap=y" >> .config
-          echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
-          echo "CONFIG_LUCI_LANG_zh-cn=y" >> .config
-          echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
-          echo "# CONFIG_PACKAGE_dnsmasq is not set" >> .config
-          echo "CONFIG_PACKAGE_firewall4=y" >> .config
-          echo "CONFIG_PACKAGE_nftables=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-nat=y" >> .config
-          echo "# CONFIG_PACKAGE_kmod-ipt-nat6 is not set" >> .config
-          echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set" >> .config
-          echo "# CONFIG_PACKAGE_iptables is not set" >> .config
-          echo "CONFIG_PACKAGE_opkg=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ath11k=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y" >> .config
-          echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y" >> .config
-          echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set" >> .config
-          echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set" >> .config
-          echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set" >> .config
-          echo "CONFIG_PACKAGE_luci-app-homeproxy=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_sing-box=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-adguardhome=y" >> .config
-          echo "CONFIG_PACKAGE_adguardhome=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-turboacc=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-fast-classifier=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-shortcut-fe=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-shortcut-fe-drv=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
-          echo "CONFIG_PACKAGE_lucky=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-filebrowser=y" >> .config
-          echo "CONFIG_PACKAGE_filebrowser=y" >> .config
-          echo "CONFIG_PACKAGE_docker=y" >> .config
-          echo "CONFIG_PACKAGE_dockerd=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-docker=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-veth=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-br-netfilter=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-bridge=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-extra=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-physdev=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-lib-crc32c=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-crypto-crc32c=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-dm=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-overlay=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-zram=y" >> .config
-          echo "CONFIG_PACKAGE_zram-swap=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-usb-storage=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-usb-storage-uas=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-usb3=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-fs-ext4=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-fs-exfat=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-fs-vfat=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y" >> .config
-          echo "CONFIG_PACKAGE_block-mount=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-fuse=y" >> .config
-          echo "CONFIG_PACKAGE_e2fsprogs=y" >> .config
-          echo "CONFIG_PACKAGE_fdisk=y" >> .config
-          echo "CONFIG_PACKAGE_bash=y" >> .config
-          echo "CONFIG_PACKAGE_htop=y" >> .config
-          echo "CONFIG_PACKAGE_curl=y" >> .config
-          echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
-          echo "CONFIG_PACKAGE_file=y" >> .config
-          echo "CONFIG_PACKAGE_lsblk=y" >> .config
-          echo "# CONFIG_PACKAGE_luci-app-dnsfilter is not set" >> .config
-          echo "# CONFIG_PACKAGE_luci-app-openclash is not set" >> .config
-          echo "# CONFIG_PACKAGE_luci-app-mosdns is not set" >> .config
-          echo "# CONFIG_PACKAGE_smartdns is not set" >> .config
-          echo "# CONFIG_PACKAGE_luci-app-samba4 is not set" >> .config
-          echo "# CONFIG_PACKAGE_xray-core is not set" >> .config
-          echo "# CONFIG_PACKAGE_hysteria is not set" >> .config
-          echo "# CONFIG_PACKAGE_naiveproxy is not set" >> .config
-          echo "# CONFIG_PACKAGE_tuic-client is not set" >> .config
-          echo "# CONFIG_PACKAGE_netdata is not set" >> .config
-          echo "# CONFIG_PACKAGE_vnstat2 is not set" >> .config
-          make defconfig
-          echo "Config done"
+         # network config
+         echo 'config interface loopback' > files/etc/config/network
+         echo 'option device lo' >> files/etc/config/network
+         echo 'option proto static' >> files/etc/config/network
+         echo 'option ipaddr 127.0.0.1' >> files/etc/config/network
+         echo 'option netmask 255.0.0.0' >> files/etc/config/network
+         echo '' >> files/etc/config/network
+         echo 'config interface lan' >> files/etc/config/network
+         echo 'option device br-lan' >> files/etc/config/network
+         echo 'option proto static' >> files/etc/config/network
+         echo 'option ipaddr 192.168.2.1' >> files/etc/config/network
+         echo 'option netmask 255.255.255.0' >> files/etc/config/network
+         echo 'option ip6assign 60' >> files/etc/config/network
+         echo '' >> files/etc/config/network
+         echo 'config interface wan' >> files/etc/config/network
+         echo 'option device eth1' >> files/etc/config/network
+         echo 'option proto dhcp' >> files/etc/config/network
+         echo '' >> files/etc/config/network
+         echo 'config interface wan6' >> files/etc/config/network
+         echo 'option device eth1' >> files/etc/config/network
+         echo 'option proto dhcpv6' >> files/etc/config/network
+         echo "Done: network"
 
-      - name: Clean old patches
-        run: |
-          cd workspace/openwrt
-          rm -f target/linux/qualcommax/patches-*/9999-fix-cpr4-const-qualifier.patch 2>/dev/null || true
-          echo "Patch clean done"
+         # dhcp config
+         echo 'config dnsmasq' > files/etc/config/dhcp
+         echo 'option domainneeded 1' >> files/etc/config/dhcp
+         echo 'option localise_queries 1' >> files/etc/config/dhcp
+         echo 'option rebind_protection 1' >> files/etc/config/dhcp
+         echo 'option local /lan/' >> files/etc/config/dhcp
+         echo 'option domain lan' >> files/etc/config/dhcp
+         echo 'option expandhosts 1' >> files/etc/config/dhcp
+         echo 'option authoritative 1' >> files/etc/config/dhcp
+         echo 'option readethers 1' >> files/etc/config/dhcp
+         echo 'option leasefile /tmp/dhcp.leases' >> files/etc/config/dhcp
+         echo 'option resolvfile /tmp/resolv.conf.d/resolv.conf.auto' >> files/etc/config/dhcp
+         echo 'option localservice 1' >> files/etc/config/dhcp
+         echo '' >> files/etc/config/dhcp
+         echo "config dhcp lan" >> files/etc/config/dhcp
+         echo 'option interface lan' >> files/etc/config/dhcp
+         echo 'option start 100' >> files/etc/config/dhcp
+         echo 'option limit 150' >> files/etc/config/dhcp
+         echo 'option leasetime 12h' >> files/etc/config/dhcp
+         echo 'option force 1' >> files/etc/config/dhcp
+         echo '' >> files/etc/config/dhcp
+         echo "config dhcp wan" >> files/etc/config/dhcp
+         echo 'option interface wan' >> files/etc/config/dhcp
+         echo 'option ignore 1' >> files/etc/config/dhcp
+         echo "Done: dhcp"
 
-      - name: Download packages
-        run: |
-          set -euo pipefail
-          cd workspace/openwrt
-          echo "Downloading..."
-          make download -j$(nproc) 2>&1 | tail -20 || make download -j1
-          find dl -size -1c -exec rm -f {} \; 2>/dev/null || true
-          echo "Download done"
+         # firewall config
+         echo 'config defaults' > files/etc/config/firewall
+         echo 'option input ACCEPT' >> files/etc/config/firewall
+         echo 'option output ACCEPT' >> files/etc/config/firewall
+         echo 'option forward ACCEPT' >> files/etc/config/firewall
+         echo 'option synflood_protect 1' >> files/etc/config/firewall
+         echo '' >> files/etc/config/firewall
+         echo 'config zone' >> files/etc/config/firewall
+         echo 'option name lan' >> files/etc/config/firewall
+         echo 'option input ACCEPT' >> files/etc/config/firewall
+         echo 'option output ACCEPT' >> files/etc/config/firewall
+         echo 'option forward ACCEPT' >> files/etc/config/firewall
+         echo 'list network lan' >> files/etc/config/firewall
+         echo '' >> files/etc/config/firewall
+         echo 'config zone' >> files/etc/config/firewall
+         echo 'option name wan' >> files/etc/config/firewall
+         echo 'option input ACCEPT' >> files/etc/config/firewall
+         echo 'option output ACCEPT' >> files/etc/config/firewall
+         echo 'option forward REJECT' >> files/etc/config/firewall
+         echo 'option masq 1' >> files/etc/config/firewall
+         echo 'option mtu_fix 1' >> files/etc/config/firewall
+         echo 'list network wan' >> files/etc/config/firewall
+         echo 'list network wan6' >> files/etc/config/firewall
+         echo '' >> files/etc/config/firewall
+         echo 'config forwarding' >> files/etc/config/firewall
+         echo 'option src lan' >> files/etc/config/firewall
+         echo 'option dest wan' >> files/etc/config/firewall
+         echo "Done: firewall"
 
-      - name: Build firmware
-        id: compile
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd workspace/openwrt
-          echo "Start build, CPU cores: $(nproc)"
-          echo "Start time: $(date)"
-          make -j$(nproc) V=s 2>&1 | tee build.log
-          MAKE_STATUS=${PIPESTATUS[0]}
-          echo "End time: $(date)"
-          if [ "$MAKE_STATUS" -eq 0 ]; then
-            echo "status=success" >> "$GITHUB_OUTPUT"
-            echo "Build success!"
-          else
-            echo "status=failure" >> "$GITHUB_OUTPUT"
-            echo "Build errors:"
-            grep -n " error:" build.log | grep -v "^Binary" | head -20 || true
-            tail -50 build.log
-            exit 1
-          fi
+         # uci-defaults script
+         echo '#!/bin/sh' > files/etc/uci-defaults/99-custom
+         echo 'sleep 10' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/network restart' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/dnsmasq restart' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/firewall restart' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/system restart' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/dnsmasq enable' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/firewall enable' >> files/etc/uci-defaults/99-custom
+         echo 'DIST_ARCH=$(grep DISTRIB_ARCH /etc/openwrt_release 2>/dev/null | cut -d. -f2)' >> files/etc/uci-defaults/99-custom
+         echo '[ -z "$DIST_ARCH" ] && DIST_ARCH=aarch64_cortex-a53' >> files/etc/uci-defaults/99-custom
+         echo 'echo "src/gz openwrt_core https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/targets/qualcommax/ipq60xx/packages" > /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom
+         echo 'echo "src/gz openwrt_base https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/base" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom
+         echo 'echo "src/gz openwrt_luci https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/luci" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom
+         echo 'echo "src/gz openwrt_packages https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/packages" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom
+         echo 'echo "src/gz openwrt_routing https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/routing" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom
+         echo '/etc/init.d/dnsfilter disable 2>/dev/null || true' >> files/etc/uci-defaults/99-custom
+         echo 'for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -f "$f" ] && echo performance > "$f" 2>/dev/null; done' >> files/etc/uci-defaults/99-custom
+         echo 'exit 0' >> files/etc/uci-defaults/99-custom
+         chmod +x files/etc/uci-defaults/99-custom
+         echo "Done: uci-defaults"
 
-      - name: Organize firmware
-        if: ${{ steps.compile.outputs.status == 'success' }}
-        run: |
-          cd workspace/openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-          ls -lh
+         # sysctl config
+         echo 'net.core.default_qdisc=fq' > files/etc/sysctl.d/99-custom.conf
+         echo 'net.ipv4.tcp_congestion_control=bbr' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.ipv4.tcp_slow_start_after_idle=0' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.ipv4.tcp_tw_reuse=2' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.ipv4.tcp_max_syn_backlog=8192' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.ipv4.ip_forward=1' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.bridge.bridge-nf-call-iptables=1' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.bridge.bridge-nf-call-ip6tables=1' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.netfilter.nf_conntrack_max=131072' >> files/etc/sysctl.d/99-custom.conf
+         echo 'net.netfilter.nf_conntrack_tcp_timeout_established=3600' >> files/etc/sysctl.d/99-custom.conf
+         echo "Done: sysctl"
 
-      - name: Upload artifacts
-        if: ${{ steps.compile.outputs.status == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt-360V6-${{ github.run_number }}
-          path: |
-            ${{ env.FIRMWARE_PATH }}/*.ubi
-            ${{ env.FIRMWARE_PATH }}/*.itb
-            ${{ env.FIRMWARE_PATH }}/*.bin
-            ${{ env.FIRMWARE_PATH }}/*.manifest
-          retention-days: 7
-          if-no-files-found: warn
+         echo "=== Config files created ==="
+         find files -type f
+         echo "==========================="
 
-      - name: Create Release
-        if: ${{ steps.compile.outputs.status == 'success' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "OpenWrt 360 V6 - Build ${{ github.run_number }} (${{ env.BUILD_DATE }})"
-          files: |
-            ${{ env.FIRMWARE_PATH }}/*.ubi
-            ${{ env.FIRMWARE_PATH }}/*.itb
-            ${{ env.FIRMWARE_PATH }}/*.bin
-            ${{ env.FIRMWARE_PATH }}/*.manifest
-          body: |
-            ## OpenWrt for 360 V6
-            - Branch: ${{ env.REPO_BRANCH }}
-            - Commit: ${{ env.OPENWRT_COMMIT }}
-            - Build: ${{ github.run_number }}
-            - Date: ${{ env.BUILD_DATE }}
-            - Default IP: 192.168.2.1
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     - name: Generate .config
+       run: |
+         set -euo pipefail
+         cd workspace/openwrt
+         echo "CONFIG_TARGET_qualcommax=y" > .config
+         echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+         echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
+         echo "CONFIG_TARGET_ROOTFS_PARTSIZE=200" >> .config
+         echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+         echo "CONFIG_CCACHE=y" >> .config
+         echo "CONFIG_SSTRIP=y" >> .config
+         echo "CONFIG_TARGET_KERNEL_PARTSIZE=32" >> .config
+         echo "CONFIG_KERNEL_PERF_EVENTS=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-cpufreq-dt=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-cpufreq-dt-platdev=y" >> .config
+         echo "CONFIG_PACKAGE_cpufreq-utils=y" >> .config
+         echo "CONFIG_PACKAGE_luci=y" >> .config
+         echo "CONFIG_PACKAGE_luci-base=y" >> .config
+         echo "CONFIG_PACKAGE_luci-compat=y" >> .config
+         echo "CONFIG_PACKAGE_luci-lib-ipkg=y" >> .config
+         echo "CONFIG_PACKAGE_luci-ssl=y" >> .config
+         echo "CONFIG_PACKAGE_luci-theme-bootstrap=y" >> .config
+         echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
+         echo "CONFIG_LUCI_LANG_zh-cn=y" >> .config
+         echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+         echo "# CONFIG_PACKAGE_dnsmasq is not set" >> .config
+         echo "CONFIG_PACKAGE_firewall4=y" >> .config
+         echo "CONFIG_PACKAGE_nftables=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-nft-nat=y" >> .config
+         echo "# CONFIG_PACKAGE_kmod-ipt-nat6 is not set" >> .config
+         echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set" >> .config
+         echo "# CONFIG_PACKAGE_iptables is not set" >> .config
+         echo "CONFIG_PACKAGE_opkg=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-ath11k=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y" >> .config
+         echo "CONFIG_PACKAGE_ath11k-firmware-ipq6010=y" >> .config
+         echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set" >> .config
+         echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set" >> .config
+         echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set" >> .config
+         echo "CONFIG_PACKAGE_luci-app-homeproxy=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_sing-box=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-adguardhome=y" >> .config
+         echo "CONFIG_PACKAGE_adguardhome=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-turboacc=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-fast-classifier=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-shortcut-fe=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-shortcut-fe-drv=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-lucky=y" >> .config
+         echo "CONFIG_PACKAGE_lucky=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-filebrowser=y" >> .config
+         echo "CONFIG_PACKAGE_filebrowser=y" >> .config
+         echo "CONFIG_PACKAGE_docker=y" >> .config
+         echo "CONFIG_PACKAGE_dockerd=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-docker=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-veth=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-br-netfilter=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-nft-bridge=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-ipt-extra=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-ipt-physdev=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-lib-crc32c=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-crypto-crc32c=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-dm=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-overlay=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-zram=y" >> .config
+         echo "CONFIG_PACKAGE_zram-swap=y" >> .config
+         echo "CONFIG_PACKAGE_luci-app-ttyd=y" >> .config
+         echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-usb-storage=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-usb-storage-uas=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-usb3=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-fs-ext4=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-fs-exfat=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-fs-vfat=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y" >> .config
+         echo "CONFIG_PACKAGE_block-mount=y" >> .config
+         echo "CONFIG_PACKAGE_kmod-fuse=y" >> .config
+         echo "CONFIG_PACKAGE_e2fsprogs=y" >> .config
+         echo "CONFIG_PACKAGE_fdisk=y" >> .config
+         echo "CONFIG_PACKAGE_bash=y" >> .config
+         echo "CONFIG_PACKAGE_htop=y" >> .config
+         echo "CONFIG_PACKAGE_curl=y" >> .config
+         echo "CONFIG_PACKAGE_wget-ssl=y" >> .config
+         echo "CONFIG_PACKAGE_file=y" >> .config
+         echo "CONFIG_PACKAGE_lsblk=y" >> .config
+         echo "# CONFIG_PACKAGE_luci-app-dnsfilter is not set" >> .config
+         echo "# CONFIG_PACKAGE_luci-app-openclash is not set" >> .config
+         echo "# CONFIG_PACKAGE_luci-app-mosdns is not set" >> .config
+         echo "# CONFIG_PACKAGE_smartdns is not set" >> .config
+         echo "# CONFIG_PACKAGE_luci-app-samba4 is not set" >> .config
+         echo "# CONFIG_PACKAGE_xray-core is not set" >> .config
+         echo "# CONFIG_PACKAGE_hysteria is not set" >> .config
+         echo "# CONFIG_PACKAGE_naiveproxy is not set" >> .config
+         echo "# CONFIG_PACKAGE_tuic-client is not set" >> .config
+         echo "# CONFIG_PACKAGE_netdata is not set" >> .config
+         echo "# CONFIG_PACKAGE_vnstat2 is not set" >> .config
+         make defconfig
+         echo "Config done"
 
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ github.run_number }}
-          path: workspace/openwrt/build.log
-          retention-days: 3
-          if-no-files-found: ignore
+     - name: Clean old patches
+       run: |
+         cd workspace/openwrt
+         rm -f target/linux/qualcommax/patches-*/9999-fix-cpr4-const-qualifier.patch 2>/dev/null || true
+         echo "Patch clean done"
+
+     - name: Download packages
+       run: |
+         set -euo pipefail
+         cd workspace/openwrt
+         echo "Downloading..."
+         make download -j$(nproc) 2>&1 | tail -20 || make download -j1
+         find dl -size -1c -exec rm -f {} \; 2>/dev/null || true
+         echo "Download done"
+
+     - name: Build firmware
+       id: compile
+       shell: bash
+       run: |
+         set -euo pipefail
+         cd workspace/openwrt
+         echo "Start build, CPU cores: $(nproc)"
+         echo "Start time: $(date)"
+         make -j$(nproc) V=s 2>&1 | tee build.log
+         MAKE_STATUS=${PIPESTATUS[0]}
+         echo "End time: $(date)"
+         if [ "$MAKE_STATUS" -eq 0 ]; then
+           echo "status=success" >> "$GITHUB_OUTPUT"
+           echo "Build success!"
+         else
+           echo "status=failure" >> "$GITHUB_OUTPUT"
+           echo "Build errors:"
+           grep -n " error:" build.log | grep -v "^Binary" | head -20 || true
+           tail -50 build.log
+           exit 1
+         fi
+
+     - name: Organize firmware
+       if: ${{ steps.compile.outputs.status == 'success' }}
+       run: |
+         cd workspace/openwrt/bin/targets/*/*
+         rm -rf packages
+         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+         ls -lh
+
+     - name: Upload artifacts
+       if: ${{ steps.compile.outputs.status == 'success' }}
+       uses: actions/upload-artifact@v4
+       with:
+         name: OpenWrt-360V6-${{ github.run_number }}
+         path: |
+           ${{ env.FIRMWARE_PATH }}/*.ubi
+           ${{ env.FIRMWARE_PATH }}/*.itb
+           ${{ env.FIRMWARE_PATH }}/*.bin
+           ${{ env.FIRMWARE_PATH }}/*.manifest
+         retention-days: 7
+         if-no-files-found: warn
+
+     - name: Create Release
+       if: ${{ steps.compile.outputs.status == 'success' }}
+       uses: softprops/action-gh-release@v2
+       with:
+         tag_name: v${{ github.run_number }}
+         name: "OpenWrt 360 V6 - Build ${{ github.run_number }} (${{ env.BUILD_DATE }})"
+         files: |
+           ${{ env.FIRMWARE_PATH }}/*.ubi
+           ${{ env.FIRMWARE_PATH }}/*.itb
+           ${{ env.FIRMWARE_PATH }}/*.bin
+           ${{ env.FIRMWARE_PATH }}/*.manifest
+         body: |
+           ## OpenWrt for 360 V6
+           - Branch: ${{ env.REPO_BRANCH }}
+           - Commit: ${{ env.OPENWRT_COMMIT }}
+           - Build: ${{ github.run_number }}
+           - Date: ${{ env.BUILD_DATE }}
+           - Default IP: 192.168.2.1
+         draft: false
+         prerelease: false
+       env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+     - name: Upload build log
+       if: always()
+       uses: actions/upload-artifact@v4
+       with:
+         name: build-log-${{ github.run_number }}
+         path: workspace/openwrt/build.log
+         retention-days: 3
+         if-no-files-found: ignore
