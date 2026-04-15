@@ -1,6 +1,6 @@
 name: Build OpenWrt for 360 V6
 on:
-  workflow_dispatch
+  workflow_dispatch:   # ✅ 添加冒号
   push:
     branches:
       - main
