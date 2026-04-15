@@ -64,26 +64,18 @@ jobs:
           cd openwrt
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           echo "📥 下载 luci-theme-argon..."
-          curl -fSL --retry 3 --retry-delay 10 --connect-timeout 60 -H "User-Agent: GitHubActions/OpenWrtBuilder" -o /tmp/argon.tar.gz "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz"
-          mkdir -p package/luci-theme-argon
-          tar -xzf /tmp/argon.tar.gz -C package/luci-theme-argon --strip-components=1
-          rm -f /tmp/argon.tar.gz
-          echo "✅ argon 完成"
-
+          curl -fSL --retry 3 --retry-delay 10 --connect-timeout 60 -H "User-Agent: GitHubActions/OpenWrtBuilder" -o /tmp/argon.tar.gz "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" && mkdir -p package/luci-theme-argon && tar -xzf /tmp/argon.tar.gz -C package/luci-theme-argon --strip-components=1 && rm -f /tmp/argon.tar.gz && echo "✅ argon 完成" || echo "⚠️ argon 跳过"
           echo "📥 克隆 homeproxy..."
-          [ -d "package/homeproxy" ] || git clone --depth 1 --branch master --single-branch https://github.com/immortalwrt/homeproxy.git package/homeproxy || git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy
+          git clone --depth 1 --branch master --single-branch https://github.com/immortalwrt/homeproxy.git package/homeproxy 2>/dev/null || git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy 2>/dev/null || true
           echo "✅ homeproxy 完成"
-
           echo "📥 克隆 luci-app-lucky..."
-          [ -d "package/luci-app-lucky" ] || git clone --depth 1 https://github.com/gdy666/luci-app-lucky.git package/luci-app-lucky
+          git clone --depth 1 https://github.com/gdy666/luci-app-lucky.git package/luci-app-lucky 2>/dev/null || true
           echo "✅ luci-app-lucky 完成"
-
           echo "📥 克隆 luci-app-filebrowser..."
-          [ -d "package/luci-app-filebrowser" ] || git clone --depth 1 https://github.com/xiaorouji/openwrt-filebrowser.git package/luci-app-filebrowser
+          git clone --depth 1 https://github.com/xiaorouji/openwrt-filebrowser.git package/luci-app-filebrowser 2>/dev/null || true
           echo "✅ filebrowser 完成"
-
           echo "📥 克隆 kiddin9..."
-          [ -d "package/kiddin9-packages" ] || git clone --depth 1 https://github.com/kiddin9/openwrt-packages.git package/kiddin9-packages
+          git clone --depth 1 https://github.com/kiddin9/openwrt-packages.git package/kiddin9-packages 2>/dev/null || true
           echo "✅ kiddin9 完成"
 
       - name: 🔄 更新 Feeds
