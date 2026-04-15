@@ -27,136 +27,262 @@ jobs:
       - name: 🗑️ 释放磁盘空间
         run: |
           set -euo pipefail
+          
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/local/share/boost /usr/share/swift /usr/local/.ghcup /usr/lib/jvm
           sudo docker system prune -af --volumes 2>/dev/null || true
           sudo apt-get autoremove -y --purge && sudo apt-get clean
           sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
+          
           df -h
-          FREE_GB=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G')
-          if [ "$FREE_GB" -lt 30 ]; then
-            echo "❌ 剩余磁盘空间不足 30GB，编译可能失败"
+          
+          FREE_GB=$(df -BG / | awk 'NR==2 {print \$4}' | tr -d 'G')
+          echo "📊 当前可用空间: \${FREE_GB}GB"
+          
+          if [ "$FREE_GB" -lt 40 ]; then
+            echo "❌ 剩余磁盘空间不足 40GB，编译可能失败"
             exit 1
           fi
 
       - name: 🛠️ 安装编译依赖
         run: |
           set -euo pipefail
+          
           sudo apt-get update
           sudo apt-get install -y \
             build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
             gettext git libncurses5-dev libssl-dev python3 python3-pip rsync \
-            swig unzip zlib1g-dev wget curl ca-certificates file golang-go
+            swig unzip zlib1g-dev wget curl ca-certificates file golang-go \
+            libelf-dev libncurses-dev zstd pkg-config ccache
+          
           sudo timedatectl set-timezone "$TZ"
+          
+          # 配置 Git
+          git config --global init.defaultBranch main
+          git config --global pull.rebase false
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git config --global url."https://".insteadOf "git://"
+          
+          # 启用 ccache
+          echo "CCACHE_DIR=/opt/ccache" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESSLEVEL=6" >> $GITHUB_ENV
+          mkdir -p /opt/ccache
+          ccache -M 10G
+          ccache -z
 
       - name: 📥 克隆 OpenWrt 源码
         run: |
           set -euo pipefail
+          
           git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+          
           cd openwrt
           echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
+          
+          echo "📋 OpenWrt 信息:"
+          echo "  - 分支: $REPO_BRANCH"
+          echo "  - Commit: ${OPENWRT_COMMIT}"
 
       - name: 📦 安装第三方插件
         run: |
           set -euo pipefail
+          
           cd openwrt
-
+          
+          # 下载函数（带重试和校验）
           gh_download() {
-            local url="$1" dest="$2"
+            local url="\$1"
+            local dest="\$2"
+            local max_retries=3
+            local retry=0
             local tmp
-            tmp=$(mktemp /tmp/pkg_XXXXXX.tar.gz)
-            echo "📥 下载: $url"
-            curl -fSL --retry 3 --retry-delay 5 --connect-timeout 30 \
-              -H "User-Agent: GitHubActions/OpenWrtBuilder" \
-              -o "$tmp" "$url" || { echo "❌ 下载失败: $url"; rm -f "$tmp"; return 1; }
-            gzip -t "$tmp" 2>/dev/null \
-              || { echo "❌ gzip 校验失败: $url"; cat "$tmp" | head -3; rm -f "$tmp"; return 1; }
-            mkdir -p "$dest"
-            tar -xzf "$tmp" -C "$dest" --strip-components=1 \
-              || { echo "❌ 解压失败: $url"; rm -f "$tmp"; return 1; }
-            rm -f "$tmp"
-            echo "✅ 安装完成: $dest"
+            local success=false
+            
+            while [ $retry -lt $max_retries ] && [ "$success" = false ]; do
+              tmp=$(mktemp /tmp/pkg_XXXXXX.tar.gz)
+              echo "📥 下载 (尝试 $((retry+1))/$max_retries): $url"
+              
+              if curl -fSL --retry 3 --retry-delay 10 --connect-timeout 60 \
+                  -H "User-Agent: GitHubActions/OpenWrtBuilder" \
+                  -o "$tmp" "$url" 2>/dev/null; then
+                
+                # 验证下载
+                if [ -s "$tmp" ] && gzip -t "$tmp" 2>/dev/null; then
+                  mkdir -p "$dest"
+                  tar -xzf "$tmp" -C "$dest" --strip-components=1
+                  rm -f "$tmp"
+                  success=true
+                  echo "✅ 安装完成: $dest"
+                else
+                  echo "❌ 文件校验失败: $url"
+                  rm -f "$tmp"
+                  ((retry++))
+                  [ $retry -lt $max_retries ] && sleep 5
+                fi
+              else
+                echo "❌ 下载失败: $url"
+                rm -f "$tmp"
+                ((retry++))
+                [ $retry -lt $max_retries ] && sleep 10
+              fi
+            done
+            
+            if [ "$success" = false ]; then
+              echo "❌ $url 下载失败，已放弃"
+              return 1
+            fi
           }
-
-          # luci-theme-argon
+          
+          # ── luci-theme-argon ────────────────────────────────────
           rm -rf package/lean/luci-theme-argon 2>/dev/null || true
           gh_download \
             "https://github.com/jerrykuku/luci-theme-argon/archive/refs/tags/${ARGON_TAG}.tar.gz" \
             "package/luci-theme-argon"
-
-          # homeproxy
+          
+          # ── homeproxy ───────────────────────────────────────────
           echo "📥 克隆 homeproxy..."
-          git clone --depth 1 --branch master --single-branch \
-            https://github.com/immortalwrt/homeproxy.git \
-            package/homeproxy \
+          if [ -d "package/homeproxy" ]; then
+            echo "⚠️ homeproxy 已存在，跳过"
+          else
+            git clone --depth 1 --branch master --single-branch \
+              https://github.com/immortalwrt/homeproxy.git \
+              package/homeproxy \
             || git clone --depth 1 \
               https://github.com/immortalwrt/homeproxy.git \
               package/homeproxy \
             || { echo "❌ homeproxy 克隆失败"; exit 1; }
+          fi
           echo "✅ homeproxy 安装完成"
-
-          # luci-app-lucky（内网穿透）
+          
+          # ── luci-app-lucky（内网穿透） ─────────────────────────
           echo "📥 克隆 luci-app-lucky..."
-          git clone --depth 1 \
-            https://github.com/gdy666/luci-app-lucky.git \
-            package/luci-app-lucky \
+          if [ -d "package/luci-app-lucky" ]; then
+            echo "⚠️ luci-app-lucky 已存在，跳过"
+          else
+            git clone --depth 1 \
+              https://github.com/gdy666/luci-app-lucky.git \
+              package/luci-app-lucky \
             || { echo "❌ luci-app-lucky 克隆失败"; exit 1; }
+          fi
           echo "✅ luci-app-lucky 安装完成"
-
-          # luci-app-filebrowser
+          
+          # ── luci-app-filebrowser ────────────────────────────────
           echo "📥 克隆 luci-app-filebrowser..."
-          git clone --depth 1 \
-            https://github.com/xiaorouji/openwrt-filebrowser.git \
-            package/luci-app-filebrowser \
-            || { echo "⚠️ filebrowser 克隆失败，跳过"; true; }
+          if [ -d "package/luci-app-filebrowser" ]; then
+            echo "⚠️ luci-app-filebrowser 已存在，跳过"
+          else
+            git clone --depth 1 \
+              https://github.com/xiaorouji/openwrt-filebrowser.git \
+              package/luci-app-filebrowser \
+            || echo "⚠️ filebrowser 克隆失败，跳过"
+          fi
           echo "✅ luci-app-filebrowser 安装完成"
+          
+          # ── kiddin9 插件包（直接 clone 到 package 目录） ───────
+          echo "📥 克隆 kiddin9 插件集..."
+          if [ -d "package/kiddin9-packages" ]; then
+            echo "⚠️ kiddin9-packages 已存在，跳过"
+          else
+            # 直接 clone 到 package 目录，避免通过 feeds 安装
+            if ! git clone --depth 1 \
+                https://github.com/kiddin9/openwrt-packages.git \
+                package/kiddin9-packages; then
+              echo "⚠️ kiddin9 克隆失败，将跳过部分插件"
+            else
+              echo "✅ kiddin9 插件集安装完成"
+            fi
+          fi
 
       - name: 🔄 更新 Feeds
         run: |
+          set -euo pipefail
+          
           cd openwrt
           
-          # 1. 确保添加 kiddin9 软件源
-          echo "src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git" >> feeds.conf.default
-
-          # 2. 增加重试逻辑，防止网络抖动导致 feeds 下载不全
-          n=0
-          until [ "$n" -ge 3 ]
-          do
-             ./scripts/feeds update -a && break
-             n=$((n+1)) 
-             sleep 5
-             echo "⚠️ Feeds 更新失败，正在进行第 $n 次重试..."
-          done
-
-          # 3. 安装 feeds
-          ./scripts/feeds install -a
-          
-          # 4. 关键：检查目录是否存在，不存在则手动补充（暴力修复）
-          if [ ! -d "feeds/kiddin9" ]; then
-            echo "❌ feeds/kiddin9 缺失，尝试手动克隆..."
-            git clone --depth 1 https://github.com/kiddin9/openwrt-packages.git feeds/kiddin9
-            ./scripts/feeds install -p kiddin9 -a
+          # 清理可能存在的旧 feeds 配置
+          if [ -f "feeds.conf.default" ]; then
+            # 移除 kiddin9 行（我们已经直接 clone 到 package 目录）
+            grep -v "kiddin9" feeds.conf.default > feeds.conf.default.tmp || true
+            mv feeds.conf.default.tmp feeds.conf.default
           fi
+          
+          # 确保有基础 feeds
+          if ! grep -q "src-link" feeds.conf.default 2>/dev/null; then
+            echo "# OpenWrt base feeds" >> feeds.conf.default
+          fi
+          
+          echo "📋 当前 feeds.conf.default:"
+          cat feeds.conf.default 2>/dev/null || echo "(空)"
+          
+          # 更新 feeds（带重试和指数退避）
+          n=0
+          max_retries=3
+          until [ "$n" -ge $max_retries ]; do
+            echo "📥 Feeds 更新 (尝试 $((n+1))/$max_retries)..."
+            
+            if ./scripts/feeds update -a 2>&1; then
+              echo "✅ Feeds 更新成功"
+              break
+            fi
+            
+            n=$((n+1))
+            if [ "$n" -lt $max_retries ]; then
+              wait_time=$((n * 15 + 10))
+              echo "⚠️ Feeds 更新失败，${wait_time}秒后重试..."
+              sleep $wait_time
+            fi
+          done
+          
+          if [ "$n" -ge $max_retries ]; then
+            echo "⚠️ Feeds 更新失败，但继续尝试安装..."
+          fi
+          
+          # 安装 feeds
+          echo "📥 安装 Feeds..."
+          ./scripts/feeds install -a || echo "⚠️ 部分 feeds 安装可能失败"
 
       - name: 📁 同步自定义配置文件
         run: |
-          if [ -d files ]; then
+          cd openwrt
+          
+          if [ -d "../files" ]; then
             echo "📦 同步 files/ 目录..."
-            cp -rf files openwrt/
-            if ! chmod 755 openwrt/files/etc/uci-defaults/99-firstboot-setup.sh 2>/dev/null; then
-              echo "⚠️ chmod 755 失败"
+            cp -rf ../files .
+            
+            # 强制创建目录并设置正确权限
+            mkdir -p files/etc/uci-defaults/
+            mkdir -p files/etc/sysctl.d/
+            
+            # 设置脚本执行权限
+            if [ -d "files/etc/uci-defaults" ]; then
+              for script in files/etc/uci-defaults/*.sh; do
+                [ -f "$script" ] && chmod +x "$script"
+              done
             fi
+            
+            # 设置配置文件权限
+            if [ -d "files/etc/sysctl.d" ]; then
+              for conf in files/etc/sysctl.d/*.conf; do
+                [ -f "$conf" ] && chmod 644 "$conf"
+              done
+            fi
+            
             echo "✅ 自定义配置已就绪"
+            echo "📋 配置文件列表:"
+            find files -type f 2>/dev/null | head -20 || true
           else
             echo "⚠️ 未找到 files/ 目录，跳过配置注入"
           fi
 
-      - name: ⚙️ 生成 .config 并运行 defconfig
+      - name: ⚙️ 生成 .config
         run: |
           set -euo pipefail
+          
           cd openwrt
-
+          
+          # 生成初始配置
           {
             # ── 目标平台 ──────────────────────────────────────────
             echo "CONFIG_TARGET_qualcommax=y"
@@ -166,17 +292,14 @@ jobs:
             echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
             echo "CONFIG_CCACHE=y"
             echo "CONFIG_SSTRIP=y"
-
+            
             # ── CPU 超频 ──────────────────────────────────────────
-            # IPQ6010 默认 1.2 GHz，超频至 1.5 GHz（实测稳定）
-            # 若担心发热，可改为 1.4 GHz 或注释掉此项
             echo "CONFIG_TARGET_KERNEL_PARTSIZE=32"
             echo "CONFIG_KERNEL_PERF_EVENTS=y"
-            # 通过 cpufreq governor 释放最大频率（无需修改 dts）
             echo "CONFIG_PACKAGE_kmod-cpufreq-dt=y"
             echo "CONFIG_PACKAGE_kmod-cpufreq-dt-platdev=y"
             echo "CONFIG_PACKAGE_cpufreq-utils=y"
-
+            
             # ── LuCI 基础 ─────────────────────────────────────────
             echo "CONFIG_PACKAGE_luci=y"
             echo "CONFIG_PACKAGE_luci-base=y"
@@ -190,11 +313,11 @@ jobs:
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y"
-
+            
             # ── DNS ───────────────────────────────────────────────
             echo "CONFIG_PACKAGE_dnsmasq-full=y"
             echo "# CONFIG_PACKAGE_dnsmasq is not set"
-
+            
             # ── 防火墙 ────────────────────────────────────────────
             echo "CONFIG_PACKAGE_firewall4=y"
             echo "CONFIG_PACKAGE_nftables=y"
@@ -204,7 +327,7 @@ jobs:
             echo "# CONFIG_PACKAGE_kmod-ipt-nat is not set"
             echo "# CONFIG_PACKAGE_iptables is not set"
             echo "CONFIG_PACKAGE_opkg=y"
-
+            
             # ── 无线驱动 ──────────────────────────────────────────
             echo "CONFIG_PACKAGE_kmod-ath11k=y"
             echo "CONFIG_PACKAGE_kmod-ath11k-ahb=y"
@@ -212,40 +335,38 @@ jobs:
             echo "# CONFIG_PACKAGE_kmod-ath11k-pci is not set"
             echo "# CONFIG_PACKAGE_kmod-ath10k-ct is not set"
             echo "# CONFIG_PACKAGE_ath11k-firmware-qcn9074 is not set"
-
+            
             # ── 代理：HomeProxy + sing-box ────────────────────────
             echo "CONFIG_PACKAGE_luci-app-homeproxy=y"
             echo "CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y"
             echo "CONFIG_PACKAGE_sing-box=y"
-
+            
             # ── DNS 优化：AdGuardHome ─────────────────────────────
             echo "CONFIG_PACKAGE_luci-app-adguardhome=y"
             echo "CONFIG_PACKAGE_adguardhome=y"
             echo "CONFIG_PACKAGE_luci-i18n-adguardhome-zh-cn=y"
-
+            
             # ── 网络加速：TurboAcc ────────────────────────────────
             echo "CONFIG_PACKAGE_luci-app-turboacc=y"
             echo "CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y"
-            # TurboAcc 依赖（按需启用，offload 与 nftables 共存）
             echo "CONFIG_PACKAGE_kmod-fast-classifier=y"
             echo "CONFIG_PACKAGE_kmod-shortcut-fe=y"
             echo "CONFIG_PACKAGE_kmod-shortcut-fe-drv=y"
-
+            
             # ── 内网穿透：Lucky ───────────────────────────────────
             echo "CONFIG_PACKAGE_luci-app-lucky=y"
             echo "CONFIG_PACKAGE_lucky=y"
-
+            
             # ── 文件管理：FileBrowser ─────────────────────────────
             echo "CONFIG_PACKAGE_luci-app-filebrowser=y"
             echo "CONFIG_PACKAGE_filebrowser=y"
-
-            # ── Docker ───────────────────────────────────────────
+            
+            # ── Docker ────────────────────────────────────────────
             echo "CONFIG_PACKAGE_docker=y"
             echo "CONFIG_PACKAGE_dockerd=y"
             echo "CONFIG_PACKAGE_luci-app-docker=y"
             echo "CONFIG_PACKAGE_luci-app-dockerman=y"
             echo "CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y"
-            # Docker 内核依赖
             echo "CONFIG_PACKAGE_kmod-veth=y"
             echo "CONFIG_PACKAGE_kmod-br-netfilter=y"
             echo "CONFIG_PACKAGE_kmod-nft-bridge=y"
@@ -255,29 +376,29 @@ jobs:
             echo "CONFIG_PACKAGE_kmod-crypto-crc32c=y"
             echo "CONFIG_PACKAGE_kmod-dm=y"
             echo "CONFIG_PACKAGE_kmod-overlay=y"
-
+            
             # ── 性能优化 ──────────────────────────────────────────
             echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
             echo "CONFIG_PACKAGE_kmod-zram=y"
             echo "CONFIG_PACKAGE_zram-swap=y"
-
+            
             # ── 终端 ──────────────────────────────────────────────
             echo "CONFIG_PACKAGE_luci-app-ttyd=y"
             echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
-
-            # ── USB 外置存储（U盘扩展） ───────────────────────────
+            
+            # ── USB 外置存储 ─────────────────────────────────────
             echo "CONFIG_PACKAGE_kmod-usb-storage=y"
-            echo "CONFIG_PACKAGE_kmod-usb-storage-uas=y"  # UAS 高速协议
+            echo "CONFIG_PACKAGE_kmod-usb-storage-uas=y"
             echo "CONFIG_PACKAGE_kmod-usb3=y"
             echo "CONFIG_PACKAGE_kmod-fs-ext4=y"
-            echo "CONFIG_PACKAGE_kmod-fs-exfat=y"         # exFAT 支持（大文件 U盘）
+            echo "CONFIG_PACKAGE_kmod-fs-exfat=y"
             echo "CONFIG_PACKAGE_kmod-fs-vfat=y"
-            echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y"         # NTFS 读写
+            echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y"
             echo "CONFIG_PACKAGE_block-mount=y"
-            echo "CONFIG_PACKAGE_kmod-fuse=y"              # FUSE（filebrowser 挂载需要）
+            echo "CONFIG_PACKAGE_kmod-fuse=y"
             echo "CONFIG_PACKAGE_e2fsprogs=y"
             echo "CONFIG_PACKAGE_fdisk=y"
-
+            
             # ── 工具包 ────────────────────────────────────────────
             echo "CONFIG_PACKAGE_bash=y"
             echo "CONFIG_PACKAGE_htop=y"
@@ -285,7 +406,7 @@ jobs:
             echo "CONFIG_PACKAGE_wget-ssl=y"
             echo "CONFIG_PACKAGE_file=y"
             echo "CONFIG_PACKAGE_lsblk=y"
-
+            
             # ── 明确禁用的包 ──────────────────────────────────────
             echo "# CONFIG_PACKAGE_luci-app-dnsfilter is not set"
             echo "# CONFIG_PACKAGE_luci-app-openclash is not set"
@@ -299,29 +420,29 @@ jobs:
             echo "# CONFIG_PACKAGE_netdata is not set"
             echo "# CONFIG_PACKAGE_vnstat2 is not set"
           } > .config
-
-          make defconfig
-
+          
+          # 运行 defconfig 生成完整配置
+          make defconfig 2>&1 | grep -E "(^Configuring|error|warning)" || true
+          
+          # 验证目标设备配置存在
           if ! grep -q "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-            echo "⚠️ 目标设备被 defconfig 覆盖，强制补写..."
-            grep -v "^CONFIG_TARGET_" .config > .config.tmp
+            echo "❌ 目标设备配置丢失，正在修复..."
+            # 追加设备配置
             {
               echo "CONFIG_TARGET_qualcommax=y"
               echo "CONFIG_TARGET_qualcommax_ipq60xx=y"
               echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y"
-            } >> .config.tmp
-            mv .config.tmp .config
-            make defconfig
+            } >> .config
           fi
-
+          
+          # 查找并添加 zram 界面包
           ZRAM_PKG=$(./scripts/feeds search zram 2>/dev/null | grep -o 'luci-app-zram[^ ]*' | head -1 || true)
           if [ -n "$ZRAM_PKG" ]; then
             echo "CONFIG_PACKAGE_${ZRAM_PKG}=y" >> .config
             echo "✅ zram 界面包: $ZRAM_PKG"
-          else
-            echo "⚠️ 未找到 luci-app-zram 系列包，跳过"
           fi
-
+          
+          echo ""
           echo "=== .config 关键项验证 ==="
           grep "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6" .config \
             && echo "✅ 目标设备: 360V6" || echo "❌ 目标设备未设置"
@@ -344,61 +465,75 @@ jobs:
           grep "CONFIG_PACKAGE_kmod-cpufreq-dt=y" .config \
             && echo "✅ CPU 超频模块已启用" || echo "⚠️ CPU 超频模块未生效"
 
-      - name: 🩹 移除失效的内核 patch
+      - name: 🩹 清理失效的内核 patch
         run: |
-          rm -f openwrt/target/linux/qualcommax/patches-6.12/9999-fix-cpr4-const-qualifier.patch
-          echo "✅ 旧 patch 已移除"
+          cd openwrt
+          
+          # 清理可能存在的失效 patch
+          rm -f target/linux/qualcommax/patches-*/9999-fix-cpr4-const-qualifier.patch 2>/dev/null || true
+          
+          echo "✅ 旧 patch 清理完成"
 
       - name: ⬇️ 下载编译所需软件包
         run: |
-          cd openwrt
-          make download -j$(nproc) || exit 1
-          find dl -size -1c -exec rm -f {} \;
-
-      - name: 🩹 内核解压后 sed 修复 cpr4
-        run: |
           set -euo pipefail
+          
           cd openwrt
-          echo "📦 解压内核源码..."
-          make target/linux/prepare -j$(nproc) V=s 2>&1 | tail -5 || true
-
-          CPR4_FILE=$(find build_dir -name "cpr4-apss-regulator.c" 2>/dev/null | head -1)
-          if [ -z "$CPR4_FILE" ]; then
-            echo "⚠️ 未找到 cpr4-apss-regulator.c，跳过"
-          else
-            echo "📄 找到: $CPR4_FILE"
-            if grep -q "ctrl->name = cpr3_thread->corner->desc->name;" "$CPR4_FILE"; then
-              sed -i \
-                's/ctrl->name = cpr3_thread->corner->desc->name;/ctrl->name = (char *)cpr3_thread->corner->desc->name;/' \
-                "$CPR4_FILE"
-              echo "✅ 修复完成"
-              grep "ctrl->name" "$CPR4_FILE"
-            else
-              echo "✅ 无需修复（行已不存在或已修复）"
-            fi
-          fi
+          
+          echo "📥 开始下载软件包..."
+          make download -j$(nproc) 2>&1 | tail -20 || {
+            echo "⚠️ 部分下载失败，尝试单线程重试..."
+            make download -j1
+          }
+          
+          # 清理损坏的下载文件
+          find dl -size -1c -exec rm -f {} \; 2>/dev/null || true
+          find dl -size 0 -exec rm -f {} \; 2>/dev/null || true
+          
+          echo "✅ 下载完成"
 
       - name: 🔨 编译固件
         id: compile
         shell: bash
         run: |
+          set -euo pipefail
+          
           cd openwrt
-          echo "🔨 开始编译，CPU 核心数: $(nproc)..."
-
+          
+          echo "🔨 开始编译，CPU 核心数: $(nproc)"
+          echo "⏰ 开始时间: $(date)"
+          
+          # 编译固件
           make -j$(nproc) V=s 2>&1 | tee build.log
           MAKE_STATUS=${PIPESTATUS[0]}
-
+          
+          echo "⏰ 结束时间: $(date)"
+          
           if [ "$MAKE_STATUS" -eq 0 ]; then
             echo "status=success" >> "$GITHUB_OUTPUT"
             echo "✅ 编译成功！"
           else
             echo "status=failure" >> "$GITHUB_OUTPUT"
-            echo "========== 首个编译器报错 =========="
+            echo ""
+            echo "========== 编译错误诊断 =========="
+            echo "--- 编译器错误 ---"
             grep -n " error:" build.log | grep -v "^Binary" | head -30 || true
+            echo ""
+            echo "--- 缺失依赖 ---"
+            grep -n "Cannot find" build.log | head -10 || true
+            grep -n "configure: error" build.log | head -10 || true
+            echo ""
+            echo "--- 内核配置错误 ---"
+            grep -n "CONFIG.*is not set" build.log | head -10 || true
+            echo ""
+            
+            # 检查是否是内核问题
             if grep -q "target/linux failed to build" build.log; then
               echo "========== 单线程重跑内核 =========="
               make target/linux/compile -j1 V=s 2>&1 | grep -A5 " error:" | head -80 || true
             fi
+            
+            echo ""
             echo "========== 日志末尾 80 行 =========="
             tail -80 build.log
             exit 1
@@ -408,8 +543,12 @@ jobs:
         if: ${{ steps.compile.outputs.status == 'success' }}
         run: |
           cd openwrt/bin/targets/*/*
+          
           rm -rf packages
+          
           echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+          
+          echo ""
           echo "=== 固件文件列表 ==="
           ls -lh
 
@@ -439,11 +578,15 @@ jobs:
             ${{ env.FIRMWARE_PATH }}/*.manifest
           body: |
             ## 📦 OpenWrt for 360 V6
-            - 分支: `${{ env.REPO_BRANCH }}` | Commit: `${{ env.OPENWRT_COMMIT }}`
-            - 构建: `${{ github.run_number }}` | 日期: `${{ env.BUILD_DATE }}`
-            - **默认 IP: `192.168.2.1`** | 首次登录无需密码
+
+            - **分支**: `${{ env.REPO_BRANCH }}`
+            - **Commit**: `${{ env.OPENWRT_COMMIT }}`
+            - **构建**: `${{ github.run_number }}`
+            - **日期**: `${{ env.BUILD_DATE }}`
+            - **默认 IP**: `192.168.2.1` | 首次登录无需密码
 
             ### 🛠️ 内置功能
+
             | 模块 | 组件 | 说明 |
             |---|---|---|
             | 🔐 代理 | HomeProxy + sing-box | 多核优化，自动分流 |
@@ -459,6 +602,7 @@ jobs:
             | 💾 U盘 | ext4/exFAT/NTFS/UAS | 全格式高速支持 |
 
             ### 📌 首次配置
+
             1. 访问 `http://192.168.2.1` 设置密码
             2. 系统 → CPU 频率 → 设为 `performance` 模式
             3. LuCI → 服务 → AdGuardHome → 启用并配置上游 DNS
@@ -466,6 +610,7 @@ jobs:
             5. Docker 数据目录建议挂载到 U 盘：`/mnt/sda1/docker`
 
             ### 📌 刷机说明
+
             - **首次刷入**：使用 `squashfs-factory.ubi`
             - **在线升级**：使用 `squashfs-sysupgrade.bin`
             - **救砖/测试**：使用 `initramfs-uImage.itb`
