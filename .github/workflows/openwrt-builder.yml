@@ -90,104 +90,26 @@ jobs:
         run: |
           set -euo pipefail
           cd workspace/openwrt
-          mkdir -p files/etc/uci-defaults files/etc/sysctl.d files/etc/config
-          
-          # network config
-          echo "config interface 'loopback'" > files/etc/config/network
-          echo "option device 'lo'" >> files/etc/config/network
-          echo "option proto 'static'" >> files/etc/config/network
-          echo "option ipaddr '127.0.0.1'" >> files/etc/config/network
-          echo "option netmask '255.0.0.0'" >> files/etc/config/network
-          echo "" >> files/etc/config/network
-          echo "config interface 'lan'" >> files/etc/config/network
-          echo "option device 'br-lan'" >> files/etc/config/network
-          echo "option proto 'static'" >> files/etc/config/network
-          echo "option ipaddr '192.168.2.1'" >> files/etc/config/network
-          echo "option netmask '255.255.255.0'" >> files/etc/config/network
-          echo "Done: network"
-          
-          # dhcp config
-          echo "config dnsmasq" > files/etc/config/dhcp
-          echo "option domainneeded '1'" >> files/etc/config/dhcp
-          echo "option localise_queries '1'" >> files/etc/config/dhcp
-          echo "option rebind_protection '1'" >> files/etc/config/dhcp
-          echo "option local '/lan/'" >> files/etc/config/dhcp
-          echo "option domain 'lan'" >> files/etc/config/dhcp
-          echo "option expandhosts '1'" >> files/etc/config/dhcp
-          echo "option authoritative '1'" >> files/etc/config/dhcp
-          echo "option leasefile '/tmp/dhcp.leases'" >> files/etc/config/dhcp
-          echo "option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'" >> files/etc/config/dhcp
-          echo "" >> files/etc/config/dhcp
-          echo "config dhcp 'lan'" >> files/etc/config/dhcp
-          echo "option interface 'lan'" >> files/etc/config/dhcp
-          echo "option start '100'" >> files/etc/config/dhcp
-          echo "option limit '150'" >> files/etc/config/dhcp
-          echo "option leasetime '12h'" >> files/etc/config/dhcp
-          echo "" >> files/etc/config/dhcp
-          echo "config dhcp 'wan'" >> files/etc/config/dhcp
-          echo "option interface 'wan'" >> files/etc/config/dhcp
-          echo "option ignore '1'" >> files/etc/config/dhcp
-          echo "Done: dhcp"
-          
-          # firewall config
-          echo "config defaults" > files/etc/config/firewall
-          echo "option input 'ACCEPT'" >> files/etc/config/firewall
-          echo "option output 'ACCEPT'" >> files/etc/config/firewall
-          echo "option forward 'ACCEPT'" >> files/etc/config/firewall
-          echo "" >> files/etc/config/firewall
-          echo "config zone" >> files/etc/config/firewall
-          echo "option name 'lan'" >> files/etc/config/firewall
-          echo "option input 'ACCEPT'" >> files/etc/config/firewall
-          echo "option output 'ACCEPT'" >> files/etc/config/firewall
-          echo "option forward 'ACCEPT'" >> files/etc/config/firewall
-          echo "list network 'lan'" >> files/etc/config/firewall
-          echo "" >> files/etc/config/firewall
-          echo "config zone" >> files/etc/config/firewall
-          echo "option name 'wan'" >> files/etc/config/firewall
-          echo "option input 'REJECT'" >> files/etc/config/firewall
-          echo "option output 'ACCEPT'" >> files/etc/config/firewall
-          echo "option forward 'REJECT'" >> files/etc/config/firewall
-          echo "option masq '1'" >> files/etc/config/firewall
-          echo "option mtu_fix '1'" >> files/etc/config/firewall
-          echo "" >> files/etc/config/firewall
-          echo "config forwarding" >> files/etc/config/firewall
-          echo "option src 'lan'" >> files/etc/config/firewall
-          echo "option dest 'wan'" >> files/etc/config/firewall
-          echo "Done: firewall"
-          
-          # uci-defaults script
-          echo "#!/bin/sh" > files/etc/uci-defaults/99-custom-init
-          echo "sleep 10" >> files/etc/uci-defaults/99-custom-init
-          echo "/etc/init.d/network restart" >> files/etc/uci-defaults/99-custom-init
-          echo "/etc/init.d/dnsmasq restart" >> files/etc/uci-defaults/99-custom-init
-          echo "/etc/init.d/firewall enable" >> files/etc/uci-defaults/99-custom-init
-          echo "/etc/init.d/firewall restart" >> files/etc/uci-defaults/99-custom-init
-          echo 'DIST_ARCH=$(grep "DISTRIB_ARCH" /etc/openwrt_release 2>/dev/null | cut -d"'\''" -f2)' >> files/etc/uci-defaults/99-custom-init
-          echo '[ -z "$DIST_ARCH" ] && DIST_ARCH="aarch64_cortex-a53"' >> files/etc/uci-defaults/99-custom-init
-          echo 'echo "src/gz openwrt_core https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/targets/qualcommax/ipq60xx/packages" > /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom-init
-          echo 'echo "src/gz openwrt_base https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/base" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom-init
-          echo 'echo "src/gz openwrt_luci https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/luci" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom-init
-          echo 'echo "src/gz openwrt_packages https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/packages" >> /etc/opkg/distfeeds.conf' >> files/etc/uci-defaults/99-custom-init
-          echo "/etc/init.d/dnsfilter disable 2>/dev/null" >> files/etc/uci-defaults/99-custom-init
-          echo 'for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -f "$f" ] && echo performance > "$f" 2>/dev/null; done' >> files/etc/uci-defaults/99-custom-init
-          echo "exit 0" >> files/etc/uci-defaults/99-custom-init
-          chmod +x files/etc/uci-defaults/99-custom-init
-          echo "Done: uci-defaults"
-          
-          # sysctl config
-          echo "net.core.default_qdisc=fq" > files/etc/sysctl.d/99-custom.conf
-          echo "net.ipv4.tcp_congestion_control=bbr" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.ipv4.tcp_slow_start_after_idle=0" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.ipv4.tcp_tw_reuse=2" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.ipv4.tcp_max_syn_backlog=8192" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.ipv4.ip_forward=1" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.bridge.bridge-nf-call-iptables=1" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.bridge.bridge-nf-call-ip6tables=1" >> files/etc/sysctl.d/99-custom.conf
-          echo "net.netfilter.nf_conntrack_max=131072" >> files/etc/sysctl.d/99-custom.conf
-          echo "Done: sysctl"
-          
-          echo "Custom config done"
-          cat files/etc/config/network
+          mkdir -p files/etc/config files/etc/sysctl.d files/etc/uci-defaults
+          # Create network config
+          printf '%s\n' "config interface 'loopback'" "option device 'lo'" "option proto 'static'" "option ipaddr '127.0.0.1'" "option netmask '255.0.0.0'" "" "config interface 'lan'" "option device 'br-lan'" "option proto 'static'" "option ipaddr '192.168.2.1'" "option netmask '255.255.255.0'" "option ip6assign '60'" "" "config interface 'wan'" "option device 'eth1'" "option proto 'dhcp'" "" "config interface 'wan6'" "option device 'eth1'" "option proto 'dhcpv6'" > files/etc/config/network
+          echo "Created: network"
+          # Create dhcp config
+          printf '%s\n' "config dnsmasq" "option domainneeded '1'" "option localise_queries '1'" "option rebind_protection '1'" "option rebind_localhost '1'" "option local '/lan/'" "option domain 'lan'" "option expandhosts '1'" "option authoritative '1'" "option readethers '1'" "option leasefile '/tmp/dhcp.leases'" "option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'" "option localservice '1'" "" "config dhcp 'lan'" "option interface 'lan'" "option start '100'" "option limit '150'" "option leasetime '12h'" "option force '1'" "" "config dhcp 'wan'" "option interface 'wan'" "option ignore '1'" "" "config odhcpd 'odhcpd'" "option maindhcp '0'" "option leasefile '/tmp/dhcp.leases'" "option leasetrigger '/usr/sbin/odhcpd-update'" "option loglevel '4'" > files/etc/config/dhcp
+          echo "Created: dhcp"
+          # Create firewall config
+          printf '%s\n' "config defaults" "option input 'ACCEPT'" "option output 'ACCEPT'" "option forward 'ACCEPT'" "option synflood_protect '1'" "" "config zone" "option name 'lan'" "option input 'ACCEPT'" "option output 'ACCEPT'" "option forward 'ACCEPT'" "list network 'lan'" "" "config zone" "option name 'wan'" "option input 'ACCEPT'" "option output 'ACCEPT'" "option forward 'REJECT'" "option masq '1'" "option mtu_fix '1'" "list network 'wan'" "list network 'wan6'" "" "config forwarding" "option src 'lan'" "option dest 'wan'" > files/etc/config/firewall
+          echo "Created: firewall"
+          # Create uci-defaults script
+          printf '%s\n' "#!/bin/sh" "/etc/init.d/network restart" "/etc/init.d/dnsmasq restart" "/etc/init.d/firewall restart" "/etc/init.d/system restart" "/etc/init.d/dnsmasq enable" "/etc/init.d/firewall enable" "DIST_ARCH=$(cat /etc/openwrt_release | grep DISTRIB_ARCH | cut -d\"'\" -f2)" "[ -z \"$DIST_ARCH\" ] && DIST_ARCH=\"aarch64_cortex-a53\"" "printf '%s\n' \"src/gz openwrt_core https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/targets/qualcommax/ipq60xx/packages\" \"src/gz openwrt_base https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/base\" \"src/gz openwrt_luci https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/luci\" \"src/gz openwrt_packages https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/packages\" \"src/gz openwrt_routing https://mirrors.tuna.tsinghua.edu.cn/openwrt/snapshots/packages/${DIST_ARCH}/routing\" > /etc/opkg/distfeeds.conf" "sed -i 's/option check_signature/option check_signature 0/g' /etc/opkg.conf 2>/dev/null" "/etc/init.d/dnsfilter disable 2>/dev/null" "for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -f \"$f\" ] && echo performance > \"$f\" 2>/dev/null; done" "exit 0" > files/etc/uci-defaults/99-custom
+          chmod +x files/etc/uci-defaults/99-custom
+          echo "Created: uci-defaults"
+          # Create sysctl config
+          printf '%s\n' "net.core.default_qdisc=fq" "net.ipv4.tcp_congestion_control=bbr" "net.ipv4.tcp_slow_start_after_idle=0" "net.ipv4.tcp_tw_reuse=2" "net.ipv4.tcp_max_syn_backlog=8192" "net.ipv4.ip_forward=1" "net.bridge.bridge-nf-call-iptables=1" "net.bridge.bridge-nf-call-ip6tables=1" "net.netfilter.nf_conntrack_max=131072" "net.netfilter.nf_conntrack_tcp_timeout_established=3600" > files/etc/sysctl.d/99-custom.conf
+          echo "Created: sysctl"
+          echo "=== Config files created ==="
+          find files -type f
+          echo "==========================="
 
       - name: Generate .config
         run: |
