@@ -1,0 +1,23 @@
+#!/bin/sh
+# ZRAM Performance Tuning
+
+# 检查是否已启用
+[ -b /dev/zram0 ] || modprobe zram
+
+# 检查算法支持，优先 zstd
+ALGO="lz4"
+if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
+    ALGO="zstd"
+fi
+
+echo "Setting ZRAM algorithm: $ALGO"
+echo $ALGO > /sys/block/zram0/comp_algorithm
+
+# 设置容量为 512MB (适合 512MB RAM 设备)
+echo 512M > /sys/block/zram0/disksize
+
+# 初始化并挂载
+mkswap /dev/zram0
+swapon /dev/zram0 -p 5
+
+exit 0
