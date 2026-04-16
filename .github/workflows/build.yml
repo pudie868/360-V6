@@ -1,0 +1,31 @@
+name: Build 360V6
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Init Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev
+          git clone --depth 1 -b openwrt-23.05 https://github.com/openwrt/openwrt.git openwrt
+
+      - name: Generate Config
+        run: |
+          # 读取项目中的配置文件，避免空格问题
+          cp config/base_config openwrt/.config
+          
+          # 或者使用 echo 逐行追加关键配置 (如果需要动态修改)
+          # echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
+          # echo "CONFIG_PACKAGE_dnsmasq=n" >> openwrt/.config
+
+      - name: Build
+        run: |
+          cd openwrt
+          make defconfig
+          make download -j$(nproc)
+          make -j$(nproc) V=s || make -j1 V=s
