@@ -1,31 +1,81 @@
-name: Build 360V6
-on: workflow_dispatch
+name: Build 360V6 OpenWrt
+
+on:
+  workflow_dispatch: # 手动触发
+  schedule:
+    - cron: '0 0 * * 0' # 每周日自动构建
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: Checkout Project
         uses: actions/checkout@v4
 
-      - name: Init Environment
+      - name: Cache OpenWrt Toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir
+            openwrt/tmp
+          key: ${{ runner.os }}-toolchain-v2
+
+      - name: Initialize Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev
-          git clone --depth 1 -b openwrt-23.05 https://github.com/openwrt/openwrt.git openwrt
+          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev gawk git ccache
+          # 清理环境，防止缓存冲突
+          sudo rm -rf /usr/bin/python3 && sudo ln -s /usr/bin/python3.10 /usr/bin/python3
 
-      - name: Generate Config
+      - name: Clone Source Code
         run: |
-          # 读取项目中的配置文件，避免空格问题
-          cp config/base_config openwrt/.config
-          
-          # 或者使用 echo 逐行追加关键配置 (如果需要动态修改)
-          # echo "CONFIG_TARGET_qualcommax=y" > openwrt/.config
-          # echo "CONFIG_PACKAGE_dnsmasq=n" >> openwrt/.config
+          git clone --depth 1 -b openwrt-23.05 https://github.com/immortalwrt/immortalwrt.git openwrt
+          cd openwrt
+          # 检查并添加 Feed，防止重复
+          if ! grep -q "kiddin9" feeds.conf.default; then
+            echo "src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git" >> feeds.conf.default
+          fi
 
-      - name: Build
+      - name: Apply Configuration
         run: |
           cd openwrt
-          make defconfig
+          # 【关键修复】直接复制配置文件，彻底解决 Heredoc 缩进问题
+          cp $GITHUB_WORKSPACE/config/base.config .config
+          
+          # 注入版本信息
+          echo "CONFIG_VERSIONOPT=y" >> .config
+          echo "CONFIG_VERSION_FILE_AUTOUpdater=\"" >> .config
+          echo "CONFIG_VERSIONOPT_AUTO_URL=\"" >> .config
+
+      - name: Install Feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Download Dependencies
+        run: |
+          cd openwrt
           make download -j$(nproc)
+
+      - name: Compile Firmware
+        run: |
+          cd openwrt
+          # 多线程编译，失败时自动切换单线程详细日志
           make -j$(nproc) V=s || make -j1 V=s
+
+      - name: Organize Artifacts
+        run: |
+          cd openwrt
+          mkdir -p artifacts
+          cp bin/targets/*/*/*.bin artifacts/
+          cp bin/targets/*/*/*.manifest artifacts/
+          # 保留日志
+          tar -czf artifacts/logs.tar.gz logs/
+
+      - name: Upload Firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: 360v6-openwrt-firmware
+          path: openwrt/artifacts/*
