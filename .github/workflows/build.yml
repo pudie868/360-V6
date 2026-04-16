@@ -1,9 +1,9 @@
 name: Build 360V6 OpenWrt
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:  # 手动触发
   schedule:
-    - cron: '0 0 * * 0' # 每周日 00:00 UTC 自动构建
+    - cron: '0 0 * * 0'  # 每周日 00:00 UTC 自动构建
   push:
     branches: [main]
     paths:
@@ -80,26 +80,34 @@ jobs:
       - name: Update & Install Feeds
         run: |
           cd openwrt
-          # 【强制清理】清除所有残留，防止旧版本 Luci 污染
-          rm -rf feeds tmp dl build_dir/target-*
           
-          # 【直接写入配置】显式指定 Luci 为 23.05 分支
-          cat > feeds.conf.default <<EOF
+          # 【强制清理】防止旧缓存污染
+          rm -rf feeds tmp dl
+          
+          # 【写入配置】使用 tee 命令，最稳妥的方案
+          # 注意：这里显式指定了 Luci 和 kiddin9 的正确地址
+          tee feeds.conf.default > /dev/null << 'EOF'
           src-git packages https://git.openwrt.org/feed/packages.git
           src-git luci https://git.openwrt.org/project/luci.git^openwrt-23.05
           src-git routing https://git.openwrt.org/feed/routing.git
           src-git telephony https://git.openwrt.org/feed/telephony.git
-          src-git passwall https://fastly.jsdelivr.net/gh/xiaorouji/openwrt-passwall@main
-          src-git kiddin9 https://fastly.jsdelivr.net/gh/kiddin9/openwrt-packages@main
+          src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
+          src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git;main
           EOF
           
-          # 验证配置（调试用）
+          # 验证文件是否写入正确
           echo "=== feeds.conf.default 内容 ==="
           cat feeds.conf.default
-          echo "=============================="
-
-          # 强制更新
-          ./scripts/feeds update -f
+          echo "================================"
+          
+          # 更新源（带重试）
+          for i in 1 2 3; do
+            ./scripts/feeds update -f && break
+            echo "更新失败，重试中..."
+            sleep 10
+          done
+          
+          # 安装包
           ./scripts/feeds install -a
 
       # 7️⃣ 生成最终配置
