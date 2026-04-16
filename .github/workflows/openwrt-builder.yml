@@ -1,314 +1,75 @@
-name: Build OpenWrt for 360 V6
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [main, master]
-    paths: ['.github/workflows/openwrt-builder.yml']
-
-env:
-  REPO_URL: https://github.com/openwrt/openwrt
-  REPO_BRANCH: main
-  TZ: Asia/Shanghai
-  DEVICE: qihoo_360v6
-  TARGET: qualcommax/ipq60xx
+name: Build OpenWrt 360V6 Ultimate
+on: workflow_dispatch
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
-    permissions:
-      contents: write
-    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Cache Toolchain
+        uses: actions/cache@v4
         with:
-          fetch-depth: 0
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir
+            openwrt/tmp
+          key: ${{ runner.os }}-toolchain-v1
 
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo rm -rf /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
-          sudo docker system prune -af --volumes 2>/dev/null || true
-          sudo apt-get autoremove -y --purge && sudo apt-get clean
-          sudo swapoff -a && sudo rm -f /swapfile
-          df -h
-
-      - name: Install dependencies
+      - name: Init Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk \
-            gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
-            python3 python3-pip rsync swig unzip zlib1g-dev wget curl \
-            ca-certificates file golang-go libelf-dev zstd pkg-config ccache
-          sudo timedatectl set-timezone "$TZ"
+          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev
 
-      - name: Clone OpenWrt
+      - name: Clone Source
         run: |
-          git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+          git clone --depth 1 -b openwrt-23.05 https://github.com/openwrt/openwrt.git openwrt
           cd openwrt
-          echo "OPENWRT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          # 防重复追加 Feed
+          grep -q "immortalwrt" feeds.conf.default || echo "src-git immortalwrt https://github.com/immortalwrt/packages.git;openwrt-23.05" >> feeds.conf.default
+          grep -q "kiddin9" feeds.conf.default || echo "src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git" >> feeds.conf.default
 
-      - name: Prepare package feeds
+      - name: Generate Config
         run: |
           cd openwrt
-          # 添加常用软件源
-          echo "src-git kenzo https://github.com/kenzok8/openwrt-packages.git" >> feeds.conf.default
-          echo "src-git small https://github.com/kenzok8/small.git" >> feeds.conf.default
-          
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Load custom configuration
-        run: |
-          cd openwrt
-          
-          # 创建完整的 files 目录结构
-          mkdir -p files/etc/config
-          mkdir -p files/etc/board.d
-          mkdir -p files/etc/uci-defaults
-          mkdir -p files/etc/hotplug.d/iface
-          mkdir -p files/usr/bin
-          
-          # ============================================
-          # 关键修复 1: Network 配置（保守但可靠的 DSA）
-          # ============================================
-          cat > files/etc/config/network << 'EOF'
-          # 桥接设备定义必须在 interface 之前
-          config device
-              option name 'br-lan'
-              option type 'bridge'
-              list ports 'lan1'
-              list ports 'lan2'
-              list ports 'lan3'
-          
-          config interface 'loopback'
-              option device 'lo'
-              option proto 'static'
-              option ipaddr '127.0.0.1'
-              option netmask '255.0.0.0'
-          
-          config interface 'lan'
-              option device 'br-lan'
-              option proto 'static'
-              option ipaddr '192.168.2.1'
-              option netmask '255.255.255.0'
-              option ip6assign '60'
-          
-          # WAN 使用设备名 'wan'（IPQ60xx DSA 标准）
-          config interface 'wan'
-              option device 'wan'
-              option proto 'dhcp'
-              option force_link '1'
-          
-          config interface 'wan6'
-              option device 'wan'
-              option proto 'dhcpv6'
-              option reqaddress 'try'
-              option reqprefix 'auto'
-          EOF
-          
-          # ============================================
-          # 关键修复 2: Switch 配置（IPQ60xx 部分需要）
-          # ============================================
-          # 某些旧版驱动需要显式声明交换机
-          cat > files/etc/config/system << 'EOF'
-          config system
-              option hostname '360V6'
-              option timezone 'CST-8'
-              option ttylogin '0'
-              option log_size '64'
-              option urandom_seed '0'
-          
-          config timeserver 'ntp'
-              list server 'ntp.tencent.com'
-              list server 'ntp1.aliyun.com'
-              option enabled '1'
-              option enable_server '0'
-          EOF
-          
-          # ============================================
-          # DHCP 配置（完整版）
-          # ============================================
-          cat > files/etc/config/dhcp << 'EOF'
-          config dnsmasq
-              option domainneeded '1'
-              option localise_queries '1'
-              option rebind_protection '1'
-              option local '/lan/'
-              option domain 'lan'
-              option expandhosts '1'
-              option authoritative '1'
-              option readethers '1'
-              option leasefile '/tmp/dhcp.leases'
-              option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
-              option localservice '1'
-              option ednspacket_max '1232'
-          
-          config dhcp 'lan'
-              option interface 'lan'
-              option start '100'
-              option limit '150'
-              option leasetime '12h'
-              option dhcpv4 'server'
-              option ignore '0'
-          
-          config dhcp 'wan'
-              option interface 'wan'
-              option ignore '1'
-          
-          config odhcpd 'odhcpd'
-              option maindhcp '0'
-              option leasefile '/tmp/hosts/odhcpd'
-              option leasetrigger '/usr/sbin/odhcpd-update'
-          EOF
-          
-          # ============================================
-          # 关键修复 3: UCI-Defaults（避免重启死锁）
-          # ============================================
-          cat > files/etc/uci-defaults/99_network_fix << 'EOF'
-          #!/bin/sh
-          
-          # 等待网络设备就绪（IPQ60xx 启动慢）
-          sleep 5
-          
-          # 确保桥接成员存在
-          if ! brctl show br-lan >/dev/null 2>&1; then
-              logger -t netfix "Creating br-lan manually..."
-              brctl addbr br-lan 2>/dev/null || true
-              for port in lan1 lan2 lan3; do
-                  ip link set $port up 2>/dev/null || true
-                  brctl addif br-lan $port 2>/dev/null || true
-              done
-              ip addr add 192.168.2.1/24 dev br-lan 2>/dev/null || true
-              ip link set br-lan up
-          fi
-          
-          # 修复 DNS 转发
-          uci set dhcp.@dnsmasq[0].localservice='0'
-          uci commit dhcp
-          /etc/init.d/dnsmasq restart
-          
-          exit 0
-          EOF
-          chmod +x files/etc/uci-defaults/99_network_fix
-          
-          # ============================================
-          # 启动诊断脚本（救命用）
-          # ============================================
-          cat > files/etc/rc.local << 'EOF'
-          # Put your custom commands here that should be executed
-          # once the system init finished.
-          
-          # 网络诊断日志
-          (
-            sleep 30
-            echo "[$(date)] Network check:" >> /tmp/boot.log
-            ip addr >> /tmp/boot.log 2>&1
-            echo "----" >> /tmp/boot.log
-            brctl show >> /tmp/boot.log 2>&1
-            echo "----" >> /tmp/boot.log
-            cat /etc/config/network >> /tmp/boot.log
-            echo "----" >> /tmp/boot.log
-            logread | tail -20 >> /tmp/boot.log
-          ) &
-          
-          exit 0
-          EOF
-          
-          # ============================================
-          # 生成 .config（不再内嵌，单独生成）
-          # ============================================
-          cat > .config << 'EOFCFG'
-          CONFIG_TARGET_qualcommax=y
-          CONFIG_TARGET_qualcommax_ipq60xx=y
-          CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y
-          
-          # 基础系统
-          CONFIG_TARGET_ROOTFS_PARTSIZE=256
-          CONFIG_TARGET_ROOTFS_SQUASHFS=y
-          CONFIG_CCACHE=y
-          
-          # 内核选项（IPQ60xx 关键）
-          CONFIG_KERNEL_CPU_FREQ=y
-          CONFIG_KERNEL_PERF_EVENTS=y
-          CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
-          CONFIG_PACKAGE_kmod-leds-gpio=y
-          
-          # DSA 支持（360 V6 必需）
-          CONFIG_PACKAGE_kmod-qca-ssdk-nohnat=y
-          CONFIG_PACKAGE_kmod-phy-aquantia=y
-          CONFIG_PACKAGE_kmod-fixed-phy=y
-          CONFIG_PACKAGE_kmod-qca-nss-dp=y
-          
-          # 网络基础（避免冲突）
-          CONFIG_PACKAGE_dnsmasq-full=y
-          # CONFIG_PACKAGE_dnsmasq is not set
-          CONFIG_PACKAGE_firewall4=y
-          CONFIG_PACKAGE_nftables-json=y
-          CONFIG_PACKAGE_kmod-nft-offload=y
-          CONFIG_PACKAGE_kmod-br-netfilter=y
-          
-          # LuCI
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-compat=y
-          CONFIG_PACKAGE_luci-theme-argon=y
-          CONFIG_LUCI_LANG_zh_Hans=y
-          
-          # 实用工具
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_iperf3=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_openssh-sftp-server=y
-          CONFIG_PACKAGE_bash=y
-          
-          # 禁用可能导致冲突的包
-          # CONFIG_PACKAGE_kmod-swconfig is not set
-          # CONFIG_PACKAGE_odhcpd_ipv6only is not set
-          EOFCFG
+          # 使用 echo 生成配置文件，确保无缩进问题
+          echo "CONFIG_TARGET_qualcommax=y" > .config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
+          echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=512" >> .config
+          # 核心配置：显式禁用 dnsmasq，解决冲突
+          echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+          # NSS 硬件加速
+          echo "CONFIG_PACKAGE_kmod-qca-nss-drv=y" >> .config
+          # 代理/容器/性能
+          echo "CONFIG_PACKAGE_sing-box=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-homeproxy=y" >> .config
+          echo "CONFIG_PACKAGE_dockerd=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
+          echo "CONFIG_PACKAGE_zram-swap=y" >> .config
+          # 界面
+          echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
+          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
           
           make defconfig
 
-      - name: Download packages
+      - name: Install Feeds
         run: |
           cd openwrt
-          make download -j$(nproc) V=s || make download -j1 V=s
-          find dl -size -1c -exec rm -f {} \;
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-      - name: Build firmware
-        id: compile
+      - name: Download & Compile
         run: |
           cd openwrt
-          echo "Building with $(nproc) cores..."
+          make download -j$(nproc)
           make -j$(nproc) V=s || make -j1 V=s
-          echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Organize firmware
-        if: steps.compile.outputs.status == 'success'
-        run: |
-          cd openwrt/bin/targets/${{ env.TARGET }}
-          rm -rf packages
-          echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-          ls -lah
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        if: steps.compile.outputs.status == 'success'
-        with:
-          name: OpenWrt-360V6-${{ env.BUILD_DATE }}
-          path: |
-            ${{ env.FIRMWARE_PATH }}/*.ubi
-            ${{ env.FIRMWARE_PATH }}/*.itb
-            ${{ env.FIRMWARE_PATH }}/*.bin
-          retention-days: 7
-
-      - name: Upload build log
-        if: always()
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: openwrt/build.log
-          retention-days: 3
+          name: 360v6-firmware
+          path: openwrt/bin/targets/*/*/*.bin
