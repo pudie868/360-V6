@@ -1,13 +1,10 @@
 #!/bin/sh
-# ============================================================
-# OpenWrt Feeds Setup - 强制版本锁定版
-# ============================================================
 
-# 自动判断目录
+# 自动判断当前目录
 if [ -f "feeds.conf.default" ]; then
-    echo "当前已在 OpenWrt 目录"
+  echo "当前已在 OpenWrt 目录"
 else
-    cd "$(dirname "$0")/../openwrt" || { echo "错误：无法进入 openwrt 目录"; exit 1; }
+  cd "$(dirname "$0")/../openwrt" || { echo "错误：无法进入 openwrt 目录"; exit 1; }
 fi
 
 FEEDS_FILE="feeds.conf.default"
@@ -16,21 +13,20 @@ FEEDS_FILE="feeds.conf.default"
 rm -f $FEEDS_FILE
 touch $FEEDS_FILE
 
-# 2. 写入基础源
+# 2. 写入基础官方源
 echo "src-git packages https://git.openwrt.org/feed/packages.git" >> $FEEDS_FILE
 
-# 【关键修复】锁定 luci 到 openwrt-23.05 分支，解决 CMake 版本不兼容问题
+# 【关键】锁定 Luci 到 openwrt-23.05 分支
 echo "src-git luci https://git.openwrt.org/project/luci.git^openwrt-23.05" >> $FEEDS_FILE
 
 echo "src-git routing https://git.openwrt.org/feed/routing.git" >> $FEEDS_FILE
 echo "src-git telephony https://git.openwrt.org/feed/telephony.git" >> $FEEDS_FILE
-
 echo "" >> $FEEDS_FILE
 echo "# === Custom Feeds ===" >> $FEEDS_FILE
 
-# 3. 第三方源
+# 3. 写入第三方源
 echo "src-git passwall https://fastly.jsdelivr.net/gh/xiaorouji/openwrt-passwall@main" >> $FEEDS_FILE
 echo "src-git kiddin9 https://fastly.jsdelivr.net/gh/kiddin9/openwrt-packages@main" >> $FEEDS_FILE
 
-echo "[OK] Feeds config updated with Luci locked to 23.05 branch."
+echo "[OK] Feeds config updated."
 exit 0
