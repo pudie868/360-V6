@@ -86,36 +86,28 @@ jobs:
           echo "CONFIG_VERSION_FILE_NAME=\"360V6-$(date +%Y%m%d)-${{ github.run_number }}\"" >> .config
           echo "CONFIG_VERSION_REPO=\"${{ github.server_url }}/${{ github.repository }}\"" >> .config
 
-      # 7️⃣ 配置 Feeds（去重 + 重试逻辑）
-            # 7️⃣ 配置 Feeds（整合版：复制脚本 + 重试更新 + 安装）
+      # 7️⃣ 配置 Feeds（整合版：复制脚本 + 重试更新 + 安装）
       - name: Update & Install Feeds
         run: |
           cd openwrt
           
-          # === 1. 清理旧配置（确保环境纯净） ===
-          echo ">>> Cleaning old feeds..."
-          rm -rf feeds/kiddin9 feeds/passwall feeds.conf.default
+          # 【重要】强制删除旧的 luci 源码目录，防止缓存干扰
+          rm -rf feeds/luci
+          rm -rf package/feeds/luci
           
-          # === 2. 复制并执行自定义脚本 ===
-          # 将脚本拷贝到当前目录，避免路径错误
-          cp ${{ env.SCRIPT_DIR }}/feeds-setup.sh ./feeds-setup.sh
+          # 拷贝并运行配置脚本
+          cp ../scripts/feeds-setup.sh ./feeds-setup.sh
           chmod +x feeds-setup.sh
+          ./feeds-setup.sh
           
-          # 运行脚本配置源（输出日志便于排查）
-          echo ">>> Running feeds-setup.sh..."
-          ./feeds-setup.sh 2>&1 | tee -a ../feeds-setup.log
-          
-          # === 3. 带重试机制的强制更新（尝试3次，防止网络波动） ===
-          echo ">>> Updating feeds with retry logic..."
+          # 带重试机制的更新
           for i in 1 2 3; do
-            if ./scripts/feeds update -f 2>&1 | tee -a ../feeds-update.log; then
-              echo "✅ Feeds update succeeded on attempt $i"
-              break
-            else
-              echo "⚠️ 第 $i 次更新失败，等待 10 秒后重试..."
-              sleep 10
-            fi
+            ./scripts/feeds update -f && break
+            echo "第 $i 次更新失败，等待 10 秒后重试..."
+            sleep 10
           done
+          
+          ./scripts/feeds install -a
           
           # 检查更新是否最终成功
           if [ ! -d "feeds/packages" ]; then
