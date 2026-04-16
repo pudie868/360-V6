@@ -90,17 +90,16 @@ jobs:
       - name: Update & Install Feeds
         run: |
           cd openwrt
+          # 【核心修复】必须同时删除 tmp 目录，才能强制重新下载源码
+          # 否则系统会解压 tmp 目录下的旧缓存，导致版本号不变
+          rm -rf feeds tmp
           
-          # 【核心修复】强制删除所有旧的 feeds 目录，清除缓存污染
-          rm -rf feeds
-          rm -rf tmp
-          
-          # 拷贝并运行新配置脚本
+          # 拷贝并运行配置脚本
           cp ../scripts/feeds-setup.sh ./feeds-setup.sh
           chmod +x feeds-setup.sh
           ./feeds-setup.sh
           
-          # 更新源（带重试）
+          # 更新源（带重试机制）
           for i in 1 2 3; do
             ./scripts/feeds update -f && break
             echo "第 $i 次更新失败，等待 10 秒后重试..."
@@ -109,12 +108,6 @@ jobs:
           
           # 安装软件包
           ./scripts/feeds install -a
-          
-          # === 验证关键包是否可用（可选，提前发现配置错误） ===
-          echo ">>> Verifying key packages..."
-          ./scripts/feeds list | grep -E "kmod-qca-ssdk|kmod-ath11k" | head -5 || {
-            echo "⚠️ Warning: Some key packages not found in feeds"
-          }
 
       # 8️⃣ 生成 HTTPS 代理配置（可选）
       - name: Generate HTTPS Proxy
