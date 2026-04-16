@@ -87,25 +87,51 @@ jobs:
           echo "CONFIG_VERSION_REPO=\"${{ github.server_url }}/${{ github.repository }}\"" >> .config
 
       # 7️⃣ 配置 Feeds（去重 + 重试逻辑）
-      - name: Setup Feeds
+            # 7️⃣ 配置 Feeds（整合版：复制脚本 + 重试更新 + 安装）
+      - name: Update & Install Feeds
         run: |
           cd openwrt
           
-          # 清理旧配置，确保纯净
+          # === 1. 清理旧配置（确保环境纯净） ===
+          echo ">>> Cleaning old feeds..."
           rm -rf feeds/kiddin9 feeds/passwall feeds.conf.default
           
-          # 复制并执行自定义脚本（含重试逻辑）
-          cp ${{ env.SCRIPT_DIR }}/feeds-setup.sh ./scripts/
-          chmod +x ./scripts/feeds-setup.sh
+          # === 2. 复制并执行自定义脚本 ===
+          # 将脚本拷贝到当前目录，避免路径错误
+          cp ${{ env.SCRIPT_DIR }}/feeds-setup.sh ./feeds-setup.sh
+          chmod +x feeds-setup.sh
           
-          # 执行脚本（内部含网络重试）
-          ./scripts/feeds-setup.sh
+          # 运行脚本配置源（输出日志便于排查）
+          echo ">>> Running feeds-setup.sh..."
+          ./feeds-setup.sh 2>&1 | tee -a ../feeds-setup.log
           
-          # 强制更新 + 安装（带重试）
+          # === 3. 带重试机制的强制更新（尝试3次，防止网络波动） ===
+          echo ">>> Updating feeds with retry logic..."
           for i in 1 2 3; do
-            ./scripts/feeds update -a && break || sleep 10
+            if ./scripts/feeds update -f 2>&1 | tee -a ../feeds-update.log; then
+              echo "✅ Feeds update succeeded on attempt $i"
+              break
+            else
+              echo "⚠️ 第 $i 次更新失败，等待 10 秒后重试..."
+              sleep 10
+            fi
           done
-          ./scripts/feeds install -a
+          
+          # 检查更新是否最终成功
+          if [ ! -d "feeds/packages" ]; then
+            echo "❌ ERROR: Feeds update failed after 3 attempts"
+            exit 1
+          fi
+          
+          # === 4. 安装所有软件包 ===
+          echo ">>> Installing all feeds packages..."
+          ./scripts/feeds install -a 2>&1 | tee -a ../feeds-install.log
+          
+          # === 5. 验证关键包是否可用（可选，提前发现配置错误） ===
+          echo ">>> Verifying key packages..."
+          ./scripts/feeds list | grep -E "kmod-qca-ssdk|kmod-ath11k" | head -5 || {
+            echo "⚠️ Warning: Some key packages not found in feeds"
+          }
 
       # 8️⃣ 生成 HTTPS 代理配置（可选）
       - name: Generate HTTPS Proxy
