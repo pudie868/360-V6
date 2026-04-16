@@ -1,9 +1,9 @@
 name: Build 360V6 OpenWrt
 
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch: # 手动触发
   schedule:
-    - cron: '0 0 * * 0'  # 每周日 00:00 UTC 自动构建
+    - cron: '0 0 * * 0' # 每周日 00:00 UTC 自动构建
   push:
     branches: [main]
     paths:
@@ -42,7 +42,7 @@ jobs:
           fi
           sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
 
-      # 3️⃣ 克隆源码（带缓存）
+      # 3️⃣ 克隆源码
       - name: Clone Source Code
         uses: actions/checkout@v4
         with:
@@ -51,118 +51,100 @@ jobs:
           path: openwrt
           fetch-depth: 1
 
-      # 4️⃣ 缓存工具链（加速编译）
+      # 4️⃣ 缓存工具链（仅缓存编译产物，不缓存源码）
+      # 注意：这里删除了 dl 目录的缓存，因为我们需要强制重新下载 luci
       - name: Cache OpenWrt Toolchain
         uses: actions/cache@v4
         with:
           path: |
             openwrt/staging_dir
-            openwrt/build_dir/target-*
-            openwrt/dl
-          key: ${{ runner.os }}-toolchain-${{ hashFiles('config/base.config') }}
+            openwrt/build_dir/host*
+          key: ${{ runner.os }}-toolchain-${{ hashFiles('config/base.config') }}-${{ env.REPO_BRANCH }}
           restore-keys: |
             ${{ runner.os }}-toolchain-
 
-      # 5️⃣ 缓存 Feeds（避免重复下载）
-      - name: Cache OpenWrt Feeds
-        uses: actions/cache@v4
-        with:
-          path: |
-            openwrt/feeds
-            openwrt/tmp
-          key: ${{ runner.os }}-feeds-${{ hashFiles('scripts/feeds-setup.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-feeds-
+      # 🚫 删除了原来的 Step 5 (Feeds 缓存)，这是导致问题的根源
 
-      # 6️⃣ 应用编译配置
+      # 5️⃣ 应用编译配置
       - name: Apply Configuration
         run: |
           cd openwrt
-          # 复制基础配置（彻底避免 Heredoc 缩进问题）
+          # 复制基础配置
           cp ${{ env.CONFIG_DIR }}/base.config .config
-          
           # 注入动态版本信息
           echo "CONFIG_VERSIONOPT=y" >> .config
           echo "CONFIG_VERSION_FILE_NAME=\"360V6-$(date +%Y%m%d)-${{ github.run_number }}\"" >> .config
           echo "CONFIG_VERSION_REPO=\"${{ github.server_url }}/${{ github.repository }}\"" >> .config
 
-      # 7️⃣ 更新和安装 Feeds
+      # 6️⃣ 更新和安装 Feeds (核心修复步骤)
       - name: Update & Install Feeds
         run: |
           cd openwrt
-          # 【核心修复】必须同时删除 tmp 目录，才能强制重新下载源码
-          # 否则系统会解压 tmp 目录下的旧缓存，导致版本号不变
-          rm -rf feeds tmp
+          # 【强制清理】清除所有残留，防止旧版本 Luci 污染
+          rm -rf feeds tmp dl build_dir/target-*
           
-          # 拷贝并运行配置脚本
-          cp ../scripts/feeds-setup.sh ./feeds-setup.sh
-          chmod +x feeds-setup.sh
-          ./feeds-setup.sh
+          # 【直接写入配置】显式指定 Luci 为 23.05 分支
+          cat > feeds.conf.default <<EOF
+          src-git packages https://git.openwrt.org/feed/packages.git
+          src-git luci https://git.openwrt.org/project/luci.git^openwrt-23.05
+          src-git routing https://git.openwrt.org/feed/routing.git
+          src-git telephony https://git.openwrt.org/feed/telephony.git
+          src-git passwall https://fastly.jsdelivr.net/gh/xiaorouji/openwrt-passwall@main
+          src-git kiddin9 https://fastly.jsdelivr.net/gh/kiddin9/openwrt-packages@main
+          EOF
           
-          # 更新源（带重试机制）
-          for i in 1 2 3; do
-            ./scripts/feeds update -f && break
-            echo "第 $i 次更新失败，等待 10 秒后重试..."
-            sleep 10
-          done
-          
-          # 安装软件包
+          # 验证配置（调试用）
+          echo "=== feeds.conf.default 内容 ==="
+          cat feeds.conf.default
+          echo "=============================="
+
+          # 强制更新
+          ./scripts/feeds update -f
           ./scripts/feeds install -a
 
-      # 8️⃣ 生成 HTTPS 代理配置（可选）
-      - name: Generate HTTPS Proxy
-        if: env.PROXY_URL != ''
-        run: |
-          # 仅在设置 PROXY_URL 时生效
-          cat >> openwrt/.config <<EOF
-          CONFIG_GIT_USE_PROXY=y
-          CONFIG_GIT_PROXY_HTTP="${{ env.PROXY_URL }}"
-          CONFIG_GIT_PROXY_HTTPS="${{ env.PROXY_URL }}"
-          EOF
-
-      # 9️⃣ 生成最终配置
+      # 7️⃣ 生成最终配置
       - name: Generate Defconfig
         run: |
           cd openwrt
           make defconfig
 
-      # 🔟 下载源码包（带重试）
+      # 8️⃣ 下载源码包
       - name: Download Dependencies
         run: |
           cd openwrt
+          # 带重试机制
           for i in 1 2 3; do
-            make download -j$(nproc) && break || sleep 15
+            make download -j$(nproc) && break
+            echo "下载失败，等待 15 秒重试..."
+            sleep 15
           done
 
-      # 1️⃣1️⃣ 编译固件（并行 + 降级）
+      # 9️⃣ 编译固件
       - name: Compile Firmware
         run: |
           cd openwrt
-          # 优先并行编译，失败时自动降级单线程 + 详细日志
+          # 优先并行编译，失败时自动降级单线程
           make -j$(nproc) || {
-            echo "Parallel build failed, retrying with single thread..."
+            echo "并行编译失败，降级为单线程编译..."
             make -j1 V=sc
           }
 
-      # 1️⃣2️⃣ 整理产物
+      # 🔟 整理产物
       - name: Organize Artifacts
         run: |
           cd openwrt
           mkdir -p artifacts
-          
-          # 复制固件文件
+          # 复制固件
           find bin/targets -type f \( \
             -name "*.bin" -o -name "*.ubi" -o -name "*.itb" -o -name "*.img.gz" \
           \) -exec cp {} artifacts/ \;
-          
-          # 复制 manifest 和配置
+          # 复制 manifest
           find bin/targets -name "*.manifest" -exec cp {} artifacts/ \;
           cp .config artifacts/build.config
-          
-          # 打包日志（仅当存在时）
+          # 打包日志
           [ -d logs ] && tar -czf artifacts/build-logs.tar.gz logs/
 
-      # 1️⃣3️⃣ 上传固件
+      # 1️⃣1️⃣ 上传固件
       - name: Upload Firmware
         uses: actions/upload-artifact@v4
         with:
@@ -170,7 +152,7 @@ jobs:
           path: openwrt/artifacts/*
           retention-days: 7
 
-      # 1️⃣4️⃣ 失败时上传日志（便于排查）
+      # 1️⃣2️⃣ 失败时上传日志
       - name: Upload Logs on Failure
         if: failure()
         uses: actions/upload-artifact@v4
