@@ -48,10 +48,17 @@ jobs:
           echo "CONFIG_VERSION_FILE_AUTOUpdater=\"" >> .config
           echo "CONFIG_VERSIONOPT_AUTO_URL=\"" >> .config
 
-      - name: Install Feeds
+      - name: Update & Install Feeds
         run: |
           cd openwrt
-          ./scripts/feeds update -a
+          # 再次确保清理环境
+          rm -rf feeds/kiddin9
+          rm -rf tmp
+          # 运行我们的脚本
+          chmod +x ../scripts/feeds-setup.sh
+          ../scripts/feeds-setup.sh
+          # 强制更新
+          ./scripts/feeds update -f
           ./scripts/feeds install -a
 
       - name: Download Dependencies
