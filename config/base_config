@@ -1,0 +1,34 @@
+#!/bin/sh
+# DSA 网络修复脚本
+
+# 1. 等待端口就绪
+for i in $(seq 1 30); do [ -d /sys/class/net/lan1 ] && break; sleep 1; done
+
+# 2. 收集端口 (严防 eth0 误入)
+LAN_PORTS=""
+for p in lan1 lan2 lan3 lan4; do [ -d "/sys/class/net/$p" ] && LAN_PORTS="$LAN_PORTS $p"; done
+[ -d /sys/class/net/wan ] && WAN_PORT="wan"
+
+# 3. 写入配置 (使用 uci batch 确保原子性)
+uci batch << 'EOF'
+delete network.lan
+delete network.wan
+delete network.@device[0]
+set network.@device[0]=device
+set network.@device[0].name='br-lan'
+set network.@device[0].type='bridge'
+set network.lan=interface
+set network.lan.device='br-lan'
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.2.1'
+set network.lan.netmask='255.255.255.0'
+set network.wan=interface
+set network.wan.proto='dhcp'
+EOF
+
+# 4. 动态添加端口列表
+for p in $LAN_PORTS; do uci add_list network.@device[0].ports="$p"; done
+[ -n "$WAN_PORT" ] && uci set network.wan.device="$WAN_PORT"
+
+uci commit network
+exit 0
