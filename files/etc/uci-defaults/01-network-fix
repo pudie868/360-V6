@@ -1,0 +1,72 @@
+#!/bin/sh
+# 360V6 DSA Network Port Mapping Fix
+# 作用：修复 DSA 架构下端口映射异常，确保网口正确对应
+
+LOG="/tmp/network_fix.log"
+echo "Start Network Fix" > $LOG
+
+# 1. 等待系统端口就绪 (最长等待 30 秒)
+for i in $(seq 1 30); do
+    [ -d /sys/class/net/lan1 ] && break
+    sleep 1
+done
+
+# 2. 动态收集物理端口
+# 注意：只收集 lan/wan 命名接口，严禁包含 eth0 (CPU口)
+LAN_PORTS=""
+WAN_PORT=""
+
+for p in lan1 lan2 lan3 lan4; do
+    if [ -d "/sys/class/net/$p" ]; then
+        LAN_PORTS="$LAN_PORTS $p"
+        echo "Detected LAN: $p" >> $LOG
+    fi
+done
+
+if [ -d "/sys/class/net/wan" ]; then
+    WAN_PORT="wan"
+    echo "Detected WAN: wan" >> $LOG
+fi
+
+if [ -z "$LAN_PORTS" ]; then
+    echo "Error: No LAN ports found!" >> $LOG
+    exit 1
+fi
+
+# 3. 写入网络配置
+# 使用 uci batch 保证原子性，避免中间状态导致断电变砖
+uci batch << 'UCI_CMD'
+delete network.lan
+delete network.wan
+delete network.@device[0]
+set network.device=device
+set network.device.name='br-lan'
+set network.device.type='bridge'
+set network.lan=interface
+set network.lan.device='br-lan'
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.2.1'
+set network.lan.netmask='255.255.255.0'
+set network.wan=interface
+set network.wan.proto='dhcp'
+UCI_CMD
+
+# 4. 批量添加 LAN 端口到网桥
+for p in $LAN_PORTS; do
+    uci add_list network.device.ports="$p"
+done
+
+# 5. 设置 WAN 口
+if [ -n "$WAN_PORT" ]; then
+    uci set network.wan.device="$WAN_PORT"
+fi
+
+uci commit network
+echo "Network configuration committed." >> $LOG
+
+# 6. 修复防火墙区域绑定
+uci set firewall.@zone[0].network='lan'
+uci set firewall.@zone[1].network='wan'
+uci commit firewall
+
+exit 0
