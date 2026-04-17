@@ -14,7 +14,6 @@ env:
   REPO_BRANCH: master
   TZ: Asia/Shanghai
 
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -23,153 +22,160 @@ jobs:
       contents: write
 
     steps:
-      - name: 📦 Checkout This Repository
-        uses: actions/checkout@v4
-        with:
-          path: repo
+    - name: 📦 Checkout This Repository
+      uses: actions/checkout@v4
+      with:
+        path: repo
 
-      - name: 🗑️ Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+    - name: 🗑️ Free Disk Space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
           /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
           /usr/share/swift /usr/local/.ghcup /usr/lib/jvm
-          sudo docker rmi $(docker images -q) 2>/dev/null || true
-          sudo apt-get autoremove -y --purge && sudo apt-get clean
-          sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
+        sudo docker rmi $(docker images -q) 2>/dev/null || true
+        sudo apt-get autoremove -y --purge && sudo apt-get clean
+        sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile
 
-      - name: 🛠️ Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+    - name: 🛠️ Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
           build-essential clang flex bison g++ gawk \
           gcc-multilib g++-multilib gettext git \
           libncurses5-dev libssl-dev python3 python3-pip \
           rsync swig unzip zlib1g-dev wget curl ca-certificates file
 
-      - name: 📥 Clone Source
-        run: |
-          git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
-          cd openwrt
-          echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date '+%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+    - name: 📥 Clone Source
+      run: |
+        git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+        cd openwrt
+        echo "OPENWRT_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+        echo "BUILD_DATE=$(date '+%Y-%m-%d %H:%M')" >> $GITHUB_ENV
 
-      - name: 📦 Install Custom Packages
-        run: |
-          cd openwrt
-          rm -rf package/luci-theme-argon package/homeproxy
-          git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon
-          git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy
+    - name: 📦 Install Custom Packages
+      run: |
+        cd openwrt
+        rm -rf package/luci-theme-argon package/homeproxy
+        git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon
+        git clone --depth 1 https://github.com/immortalwrt/homeproxy.git package/homeproxy
 
-      - name: 🔄 Update & Install Feeds
-        run: |
-          cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+    - name: 🔄 Update & Install Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
-      - name: ⚙️ Apply Config & Files
-        run: |
-          cd openwrt
-          
-          # 1. 复制自定义文件 (ZRAM, Network Fix etc.)
-          if [ -d "${GITHUB_WORKSPACE}/repo/files" ]; then
-            echo "=== 复制自定义 files 目录 ==="
-            rm -rf files 2>/dev/null || true
-            cp -r "${GITHUB_WORKSPACE}/repo/files" ./files
-            find files/etc/uci-defaults/ -type f -exec chmod +x {} \; 2>/dev/null || true
-          fi
+    - name: ⚙️ Apply Config & Files
+      run: |
+        cd openwrt
+        
+        # 1. 复制自定义文件 (ZRAM, sysctl 等)
+        if [ -d "${GITHUB_WORKSPACE}/repo/files" ]; then
+          echo "=== 复制自定义 files 目录 ==="
+          cp -r "${GITHUB_WORKSPACE}/repo/files" ./
+          find files/etc/uci-defaults/ -type f -exec chmod +x {} \; 2>/dev/null || true
+        fi
+        
+        # 2. 应用配置文件
+        cp "${GITHUB_WORKSPACE}/repo/config/base.config" .config
+        
+        # 3. 移除冲突的 sing-box-tiny (防止与 sing-box 冲突)
+        SINGBOX_MK="feeds/packages/net/sing-box/Makefile"
+        if [ -f "$SINGBOX_MK" ]; then
+          sed -i '/define Package\/sing-box-tiny/,/^endef/d' "$SINGBOX_MK"
+          sed -i '/BuildPackage,sing-box-tiny/d' "$SINGBOX_MK"
+          echo "✅ 已移除 sing-box-tiny 定义"
+        fi
+        
+        # 4. 生成最终配置
+        make defconfig
+        
+        # 5. 校验关键配置
+        echo "=== 最终目标设备验证 ==="
+        grep "CONFIG_TARGET_.*DEVICE.*=y" .config || exit 1
+        echo "=== 网络架构验证 (应为 DSA) ==="
+        grep "CONFIG_KERNEL_SWCONFIG" .config || true
 
-          # 2. 应用配置文件
-          cp "${GITHUB_WORKSPACE}/repo/config/base.config" .config
-          
-          # 3. 移除冲突的 sing-box-tiny
-          SINGBOX_MK="feeds/packages/net/sing-box/Makefile"
-          if [ -f "$SINGBOX_MK" ]; then
-            sed -i '/define Package\/sing-box-tiny/,/^endef/d' "$SINGBOX_MK"
-            sed -i '/BuildPackage,sing-box-tiny/d' "$SINGBOX_MK"
-          fi
+    - name: ⬇️ Download Packages
+      run: |
+        cd openwrt
+        make download -j$(nproc)
+        find dl -size -1024c -exec rm -f {} \;
 
-          # 4. 强制锁定目标设备为 360v6 (确保幂等)
-          sed -i '/CONFIG_TARGET_.*DEVICE.*/d' .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" >> .config
-          
-          # 5. 生成最终配置
-          make defconfig
-          
-          # 6. 校验
-          echo "=== 最终目标设备验证 ==="
-          grep "CONFIG_TARGET_.*DEVICE.*=y" .config || exit 1
-
-      - name: ⬇️ Download Packages
-        run: |
-          cd openwrt
-          make download -j$(nproc)
-          find dl -size -1024c -exec rm -f {} \;
-
-      - name: 🔨 Compile Firmware
-        id: compile
-        run: |
-          cd openwrt
-          echo "🔨 开始编译 ($(nproc) 线程)..."
-          if make -j$(nproc) 2>&1 | tee build.log; then
+    - name: 🔨 Compile Firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo "🔨 开始编译 ($(nproc) 线程)..."
+        if make -j$(nproc) 2>&1 | tee build.log; then
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "⚠️ 多线程失败，降级单线程..."
+          if make -j1 V=s 2>&1 | tee -a build.log; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ 多线程失败，降级单线程..."
-            if make -j1 V=s 2>&1 | tee -a build.log; then
-              echo "status=success" >> $GITHUB_OUTPUT
-            else
-              echo "status=failure" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-          fi
-
-      - name: 📦 Prepare Artifacts
-        if: steps.compile.outputs.status == 'success'
-        run: |
-          TARGET_DIR="openwrt/bin/targets/qualcommax/ipq60xx"
-          if [ ! -d "$TARGET_DIR" ]; then
-            echo "❌ 目标目录不存在"
-            find openwrt/bin/targets -type d -maxdepth 3
+            echo "status=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
-          cd "$TARGET_DIR"
-          echo "📂 输出文件列表："
-          ls -lh
-          mkdir -p output
-          cp *360v6* output/ 2>/dev/null || true
-          cp sha256sums output/ 2>/dev/null || true
-          if ! ls output/*360v6* >/dev/null 2>&1; then
-            echo "❌ 未找到 360 V6 固件"
-            exit 1
-          fi
-          echo "✅ 固件验证通过"
-          ls -lh output/
-          echo "FIRMWARE_PATH=$PWD/output" >> $GITHUB_ENV
+        fi
 
-      - name: 🚀 Upload to Release
-        if: steps.compile.outputs.status == 'success'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: stable-v${{ github.run_number }}
-          name: OpenWrt 360 V6 (${{ env.BUILD_DATE }})
-          body: |
-            ## 📦 OpenWrt for 360 V6 (Qualcomm IPQ60xx)
-            - **版本**: ImmortalWrt Master (Snapshot)
-            - **构建时间**: ${{ env.BUILD_DATE }}
-            - **源码 Commit**: ${{ env.OPENWRT_COMMIT }}
-            
-            ### ✨ 已内置功能
-            - ✅ 修正 LAN/WAN 端口映射 (修复 DSA)
-            - ✅ ZRAM 内存优化脚本
-            - ✅ 中文界面 + Argon 主题
-            - ✅ HomeProxy + sing-box
-          files: ${{ env.FIRMWARE_PATH }}/*
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: 📦 Prepare Artifacts
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        TARGET_DIR="openwrt/bin/targets/qualcommax/ipq60xx"
+        if [ ! -d "$TARGET_DIR" ]; then
+          echo "❌ 目标目录不存在"
+          find openwrt/bin/targets -type d -maxdepth 3
+          exit 1
+        fi
+        cd "$TARGET_DIR"
+        echo "📂 输出文件列表："
+        ls -lh
+        
+        mkdir -p output
+        cp *360v6* output/ 2>/dev/null || true
+        cp sha256sums output/ 2>/dev/null || true
+        
+        if ! ls output/*360v6* >/dev/null 2>&1; then
+          echo "❌ 未找到 360 V6 固件"
+          exit 1
+        fi
+        
+        echo "✅ 固件验证通过"
+        ls -lh output/
+        echo "FIRMWARE_PATH=$PWD/output" >> $GITHUB_ENV
 
-      - name: 📋 Show Build Log Tail
-        if: always()
-        run: |
-          echo "=== 编译日志最后 50 行 ==="
-          tail -50 openwrt/build.log 2>/dev/null || echo "(无日志)"
+    - name: 🚀 Upload to Release
+      if: steps.compile.outputs.status == 'success'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: stable-v${{ github.run_number }}
+        name: OpenWrt 360 V6 (${{ env.BUILD_DATE }})
+        body: |
+          ## 📦 OpenWrt for 360 V6 (Qualcomm IPQ60xx)
+          - **版本**: ImmortalWrt Master
+          - **构建时间**: ${{ env.BUILD_DATE }}
+          - **源码 Commit**: ${{ env.OPENWRT_COMMIT }}
+          
+          ### ✨ 已修复问题
+          - ✅ 移除 NSS 驱动冲突 (修复启动网络不通)
+          - ✅ 修正 LuCI 版本匹配 (修复登录问题)
+          - ✅ Docker + nftables 兼容
+          - ✅ ZRAM 自动配置
+          
+          ### 📝 默认配置
+          - IP: 192.168.2.1 (避免与光猫冲突)
+          - 用户: root / 无密码 (首次登录请设置)
+        files: ${{ env.FIRMWARE_PATH }}/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 📋 Show Build Log Tail
+      if: always()
+      run: |
+        echo "=== 编译日志最后 50 行 ==="
+        tail -50 openwrt/build.log 2>/dev/null || echo "(无日志)"
+        echo "=== bin 目录完整内容 ==="
+        find openwrt/bin -type f | sort 2>/dev/null || true
