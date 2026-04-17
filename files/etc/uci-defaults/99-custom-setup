@@ -1,0 +1,55 @@
+#!/bin/sh
+# 360 V6 首次启动优化脚本 (安全版本，不强制重启网络)
+# 此脚本在系统完全启动后执行，避免与初始化进程冲突
+
+LOG="/tmp/uci-custom-setup.log"
+exec >> "$LOG" 2>&1
+
+echo "=== Custom setup start: $(date) ==="
+
+# 1. ZRAM 配置 (使用 uci 方式，比手动 modprobe 更安全)
+# 检查是否已配置
+if ! uci get system.@system[0].zram_size_mb >/dev/null 2>&1; then
+    echo "Configuring ZRAM..."
+    uci set system.@system[0].zram_size_mb='256'
+    uci set system.@system[0].zram_comp_algo='zstd'
+    uci commit system
+    echo "ZRAM config applied (256MB, zstd)"
+else
+    echo "ZRAM already configured, skipping"
+fi
+
+# 2. 设置 CPU 性能模式 (IPQ6018 支持)
+if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
+    echo "Setting CPU governor to performance..."
+    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo "performance" > "$cpu" 2>/dev/null || true
+    done
+fi
+
+# 3. 网络优化参数 (通过 sysctl，避免直接修改 config/network)
+# 检查是否已经设置，避免重复添加
+if [ -f /etc/sysctl.d/99-optimize.conf ]; then
+    echo "Applying sysctl optimizations..."
+    sysctl -p /etc/sysctl.d/99-optimize.conf 2>/dev/null || true
+fi
+
+# 4. 修正默认 LAN IP (如果用户需要，可选)
+# 注意：这里只检查，如果已经是 192.168.2.1 就不动，避免冲突
+CURRENT_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "unknown")
+if [ "$CURRENT_IP" = "192.168.1.1" ]; then
+    echo "Changing LAN IP to 192.168.2.1..."
+    uci set network.lan.ipaddr='192.168.2.1'
+    uci commit network
+    echo "LAN IP changed to 192.168.2.1"
+fi
+
+# 5. 设置时区
+uci set system.@system[0].timezone='CST-8'
+uci set system.@system[0].zonename='Asia/Shanghai'
+uci commit system
+
+echo "=== Custom setup completed ==="
+
+# 重要：不要在这里重启网络或服务！让系统启动流程自然处理。
+exit 0
