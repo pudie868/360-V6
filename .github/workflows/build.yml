@@ -76,39 +76,40 @@ jobs:
           echo "CONFIG_VERSION_FILE_NAME=\"360V6-$(date +%Y%m%d)-${{ github.run_number }}\"" >> .config
           echo "CONFIG_VERSION_REPO=\"${{ github.server_url }}/${{ github.repository }}\"" >> .config
 
-      # 6️⃣ 更新和安装 Feeds (核心修复步骤)
-      # 6️⃣ 更新和安装 Feeds (解决 CMake 版本冲突)
+      # 6️⃣ 更新和安装 Feeds (使用 sed 原地替换，确保修改生效)
       - name: Update & Install Feeds
         run: |
           cd openwrt
-          # 【强制清理】
+          
+          # 【第一步：清理环境】
           rm -rf feeds tmp dl
           
-          # 【写入配置】
-          # 1. Luci: 移除 ^openwrt-23.05 强制指定，让它跟随源码默认版本，解决 CMake 报错
-          # 2. kiddin9/passwall: 使用 GitHub 原生地址
-          tee feeds.conf.default > /dev/null << 'EOF'
-src-git packages https://git.openwrt.org/feed/packages.git;openwrt-23.05
-src-git luci https://git.openwrt.org/project/luci.git;openwrt-23.05
-src-git routing https://git.openwrt.org/feed/routing.git;openwrt-23.05
-src-git telephony https://git.openwrt.org/feed/telephony.git;openwrt-23.05
-src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
-src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git;main
-EOF
-
-          # 验证配置
-          echo "=== feeds.conf.default 内容 ==="
+          # 【第二步：修正 kiddin9 地址】
+          # 解释：sed -i 表示修改源文件。
+          # 无论源码里写的是 jsdelivr 还是其他地址，统一强制替换为 GitHub 原生地址
+          sed -i 's|https://fastly.jsdelivr.net/gh/kiddin9/openwrt-packages.*|https://github.com/kiddin9/openwrt-packages.git;main|g' feeds.conf.default
+          
+          # 【第三步：修正 Luci 分支 (解决 CMake 报错)】
+          # 解释：immortalwrt 源码可能没指定分支，或者指定了不兼容的分支。
+          # 这里强制将 luci 源指向 openwrt-23.05 分支，确保 CMake 版本兼容
+          sed -i 's|https://git.openwrt.org/project/luci.git.*|https://git.openwrt.org/project/luci.git;openwrt-23.05|g' feeds.conf.default
+          
+          # 【第四步：添加 Passwall (如果源码里没有)】
+          # 解释：先查找是否已有 passwall，没有则追加到文件末尾
+          grep -q "passwall" feeds.conf.default || echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
+          
+          # 【验证配置】
+          echo "=== 最终生效的 feeds.conf.default ==="
           cat feeds.conf.default
-          echo "================================"
-
-          # 更新源（带重试）
+          echo "====================================="
+          
+          # 【更新与安装】
           for i in 1 2 3; do
             ./scripts/feeds update -f && break
-            echo "更新失败，重试中..."
+            echo "更新失败，10 秒后重试..."
             sleep 10
           done
-
-          # 安装软件包
+          
           ./scripts/feeds install -a
 
       # 7️⃣ 生成最终配置
