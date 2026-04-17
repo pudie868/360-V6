@@ -24,6 +24,7 @@ echo "src-git telephony https://git.openwrt.org/feed/telephony.git" >> $FEEDS_FI
 echo "" >> $FEEDS_FILE
 echo "# === Custom Feeds ===" >> $FEEDS_FILE
 
+# update 1
 # 3. 写入第三方源
 echo "src-git passwall https://fastly.jsdelivr.net/gh/xiaorouji/openwrt-passwall@main" >> $FEEDS_FILE
 echo "src-git kiddin9 https://fastly.jsdelivr.net/gh/kiddin9/openwrt-packages@main" >> $FEEDS_FILE
