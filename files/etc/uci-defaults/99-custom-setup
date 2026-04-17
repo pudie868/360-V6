@@ -1,55 +1,43 @@
 #!/bin/sh
-# 360 V6 首次启动优化脚本 (安全版本，不强制重启网络)
-# 此脚本在系统完全启动后执行，避免与初始化进程冲突
 
-LOG="/tmp/uci-custom-setup.log"
-exec >> "$LOG" 2>&1
+echo "=== Running 99-custom-setup ===" >> /tmp/setup.log
+date >> /tmp/setup.log
 
-echo "=== Custom setup start: $(date) ==="
+# 确保配置文件存在
+[ -f /etc/config/network ] || { echo "No network config!" >> /tmp/setup.log; exit 0; }
 
-# 1. ZRAM 配置 (使用 uci 方式，比手动 modprobe 更安全)
-# 检查是否已配置
-if ! uci get system.@system[0].zram_size_mb >/dev/null 2>&1; then
-    echo "Configuring ZRAM..."
-    uci set system.@system[0].zram_size_mb='256'
-    uci set system.@system[0].zram_comp_algo='zstd'
-    uci commit system
-    echo "ZRAM config applied (256MB, zstd)"
-else
-    echo "ZRAM already configured, skipping"
+# 等待 DSA 初始化完成（关键！）
+sleep 5
+
+# 检查是否存在 lan 接口，如果不存在则创建（兼容 Master 分支自动生成逻辑）
+if ! uci -q get network.lan > /dev/null 2>&1; then
+    echo "Creating lan interface..." >> /tmp/setup.log
+    uci set network.lan=interface
+    uci set network.lan.proto='static'
+    # DSA 下通常是 br-lan
+    uci set network.lan.device='br-lan'
 fi
 
-# 2. 设置 CPU 性能模式 (IPQ6018 支持)
-if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
-    echo "Setting CPU governor to performance..."
-    for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo "performance" > "$cpu" 2>/dev/null || true
-    done
+# 确保 br-lan 桥接存在且包含物理端口
+if ! uci -q get network.@device[0] > /dev/null 2>&1; then
+    echo "Creating br-lan bridge..." >> /tmp/setup.log
+    uci add network device
+    uci set network.@device[-1].name='br-lan'
+    uci set network.@device[-1].type='bridge'
+    uci add_list network.@device[-1].ports='lan1'
+    uci add_list network.@device[-1].ports='lan2'
+    uci add_list network.@device[-1].ports='lan3'
 fi
 
-# 3. 网络优化参数 (通过 sysctl，避免直接修改 config/network)
-# 检查是否已经设置，避免重复添加
-if [ -f /etc/sysctl.d/99-optimize.conf ]; then
-    echo "Applying sysctl optimizations..."
-    sysctl -p /etc/sysctl.d/99-optimize.conf 2>/dev/null || true
-fi
+# 设置 IP
+uci set network.lan.ipaddr='192.168.2.1'
+uci set network.lan.netmask='255.255.255.0'
 
-# 4. 修正默认 LAN IP (如果用户需要，可选)
-# 注意：这里只检查，如果已经是 192.168.2.1 就不动，避免冲突
-CURRENT_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "unknown")
-if [ "$CURRENT_IP" = "192.168.1.1" ]; then
-    echo "Changing LAN IP to 192.168.2.1..."
-    uci set network.lan.ipaddr='192.168.2.1'
-    uci commit network
-    echo "LAN IP changed to 192.168.2.1"
-fi
+# 可选：禁用 DHCP（如果做旁路由/AP）
+# uci set dhcp.lan.ignore='1'
 
-# 5. 设置时区
-uci set system.@system[0].timezone='CST-8'
-uci set system.@system[0].zonename='Asia/Shanghai'
-uci commit system
+uci commit network
 
-echo "=== Custom setup completed ==="
+echo "Setup completed" >> /tmp/setup.log
 
-# 重要：不要在这里重启网络或服务！让系统启动流程自然处理。
 exit 0
