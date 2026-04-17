@@ -14,229 +14,160 @@ permissions:
   contents: write
 
 env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-  REPO_BRANCH: openwrt-23.05
+  # ✅ 关键修改：切换到 VIKINGYFY 的 fork，包含 360V6 完整支持
+  REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
+  # 该 fork 基于 ImmortalWrt，分支名通常为 master 或 openwrt-23.05，这里使用 master
+  REPO_BRANCH: master
   DEVICE_NAME: 360V6
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+
     steps:
-    # ═══════════════════════════════════════════════════════════
-    # 1️⃣ 检出本仓库（获取 config/files/scripts）
-    # ═══════════════════════════════════════════════════════════
-    - name: Checkout This Repository
-      uses: actions/checkout@v4
-      with:
-        path: repo
-        fetch-depth: 1
+      # ═══════════════════════════════════════════════════════════
+      # 1️⃣ 检出本仓库
+      # ═══════════════════════════════════════════════════════════
+      - name: Checkout This Repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          fetch-depth: 1
 
-    # ═══════════════════════════════════════════════════════════
-    # 2️⃣ 克隆 immortalwrt 源码
-    # ═══════════════════════════════════════════════════════════
-    - name: Clone immortalwrt Source
-      run: |
-        git clone --depth 1 -b ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} openwrt
-        echo "OPENWRT_HASH=$(git -C openwrt rev-parse --short HEAD)" >> $GITHUB_ENV
+      # ═══════════════════════════════════════════════════════════
+      # 2️⃣ 克隆源码 (环境变量由外部注入)
+      # ═══════════════════════════════════════════════════════════
+      - name: Clone immortalwrt Source
+        run: |
+          git clone --depth 1 -b ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} openwrt
+          echo "OPENWRT_HASH=$(git -C openwrt rev-parse --short HEAD)" >> $GITHUB_ENV
 
-    # ═══════════════════════════════════════════════════════════
-    # 3️⃣ 系统依赖 + 环境检查
-    # ═══════════════════════════════════════════════════════════
-    - name: Initialize Environment
-      run: |
-        echo "=== 安装系统依赖 ==="
-        sudo apt-get update -qq
-        sudo apt-get install -y \
+      # ═══════════════════════════════════════════════════════════
+      # 3️⃣ 系统依赖
+      # ═══════════════════════════════════════════════════════════
+      - name: Initialize Environment
+        run: |
+          echo "=== 安装系统依赖 ==="
+          sudo apt-get update -qq
+          sudo apt-get install -y \
           build-essential clang flex bison g++ gawk \
           gcc-multilib g++-multilib gettext git \
           libncurses5-dev libssl-dev python3 python3-pip \
           rsync unzip zlib1g-dev wget file zstd ccache
-        echo "✅ Python 版本: $(python3 --version)"
-        
-        echo "=== 磁盘空间检查 ==="
-        FREE_GB=$(df --output=avail / | tail -1 | awk '{print int($1/1024/1024)}')
-        echo "可用空间: ${FREE_GB}GB"
-        if [ "$FREE_GB" -lt 20 ]; then
-          echo "::warning::剩余 ${FREE_GB}GB < 20GB，尝试清理..."
-          sudo docker system prune -af --volumes 2>/dev/null || true
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+          
+          echo "=== 磁盘空间检查 ==="
           FREE_GB=$(df --output=avail / | tail -1 | awk '{print int($1/1024/1024)}')
-          echo "清理后: ${FREE_GB}GB"
-        fi
-
-    # ═══════════════════════════════════════════════════════════
-    # 4️⃣ 缓存工具链
-    # ═══════════════════════════════════════════════════════════
-    - name: Cache OpenWrt Toolchain
-      uses: actions/cache@v4
-      with:
-        path: |
-          openwrt/staging_dir
-          openwrt/build_dir/host*
-          openwrt/build_dir/toolchain-*
-          openwrt/.ccache
-        key: ${{ runner.os }}-toolchain-${{ env.REPO_BRANCH }}-${{ env.OPENWRT_HASH }}-${{ hashFiles('repo/config/base.config') }}
-        restore-keys: |
-          ${{ runner.os }}-toolchain-${{ env.REPO_BRANCH }}-
-          ${{ runner.os }}-toolchain-
-
-    # ═══════════════════════════════════════════════════════════
-    # 5️⃣ 🚀 核心步骤：配置 + Feeds + Defconfig (合并执行)
-    # ═══════════════════════════════════════════════════════════
-    - name: Configure OpenWrt
-      run: |
-        cd openwrt
-        
-        # ---------- A. 应用配置文件 ----------
-        CONFIG_FILE="${GITHUB_WORKSPACE}/repo/config/base.config"
-        if [ ! -f "$CONFIG_FILE" ]; then
-          echo "::error::配置文件不存在: $CONFIG_FILE"
-          exit 1
-        fi
-        
-        echo "=== 应用配置文件 ==="
-        cp -f "$CONFIG_FILE" .config
-        
-        # ---------- B. 覆盖 files 目录 ----------
-        if [ -d "${GITHUB_WORKSPACE}/repo/files" ]; then
-          echo "=== 覆盖 files/ 目录 ==="
-          rm -rf files 2>/dev/null || true
-          cp -r "${GITHUB_WORKSPACE}/repo/files" ./files
-          # 确保 uci-defaults 脚本可执行
-          find files/etc/uci-defaults/ -type f -exec chmod +x {} \; 2>/dev/null || true
-        fi
-
-        # ---------- C. 配置 Feeds ----------
-        echo "=== 配置 feeds ==="
-        # 修正 Feed 源地址
-        sed -i \
-          -e 's|https://fastly.jsdelivr.net/gh/kiddin9/openwrt-packages.*|https://github.com/kiddin9/openwrt-packages.git;main|g' \
-          -e 's|https://git.openwrt.org/project/luci.git.*|https://git.openwrt.org/project/luci.git;openwrt-23.05|g' \
-          feeds.conf.default
-        
-        # 添加 Passwall (幂等)
-        grep -q "passwall" feeds.conf.default || \
-          echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
-
-        # ---------- D. 更新与安装 Feeds ----------
-        echo "=== 更新 feeds ==="
-        # ❗ 重要：不要使用 rm -rf feeds，这会删除缓存
-        # 如果需要强制更新，可以删除 feeds/package 等子目录，但这里为了速度保持缓存
-        
-        # 带重试机制
-        for i in 1 2 3; do
-          echo "尝试 $i/3..."
-          ./scripts/feeds update -f 2>&1 | tee feeds-update.log && break
-          [ $i -eq 3 ] && { echo "::error::feeds 更新失败"; tail -20 feeds-update.log; exit 1; }
-          sleep $((i * 15))
-        done
-        
-        echo "=== 安装 feeds ==="
-        ./scripts/feeds install -a 2>&1 | tee feeds-install.log || \
-          { echo "::error::feeds 安装失败"; exit 1; }
-
-        # ---------- E. 生成最终配置 (Defconfig) ----------
-        echo "=== 生成最终配置 ==="
-        # ✅ 关键：使用 defconfig 确保依赖完整
-        make defconfig
-        
-        # ---------- F. 验证目标设备 ----------
-        echo "=== 验证目标设备 ==="
-        if grep -q "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
-           echo "✅ 目标设备 360V6 已确认"
-        elif grep -q "CONFIG_TARGET_qualcommax=y" .config; then
-           echo "✅ 目标平台 qualcommax 已确认"
-        else
-           echo "::error::❌ 未找到目标设备配置！请检查 base.config 内容"
-           echo "当前 .config 目标部分："
-           grep "CONFIG_TARGET" .config
-           exit 1
-        fi
-
-    # ═══════════════════════════════════════════════════════════
-    # 6️⃣ 下载依赖包
-    # ═══════════════════════════════════════════════════════════
-    - name: Download Dependencies
-      run: |
-        cd openwrt
-        echo "=== 开始下载依赖包 ==="
-        for i in 1 2 3 4; do
-          echo "下载尝试 $i/4..."
-          make download -j$(nproc) 2>&1 | tee download.log && break
-          [ $i -eq 4 ] && { echo "::error::下载失败"; tail -50 download.log; exit 1; }
-          echo "等待 $((i * 30))s 后重试..."
-          sleep $((i * 30))
-        done
-        find dl -type f \( -size 0 -o -name "*.tmp" \) -delete 2>/dev/null || true
-        echo "✅ 依赖包准备完成"
-
-    # ═══════════════════════════════════════════════════════════
-    # 7️⃣ 编译固件
-    # ═══════════════════════════════════════════════════════════
-    - name: Compile Firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo "=== 开始编译 ($(nproc) 核) ==="
-        
-        export PATH="/usr/lib/ccache:$PATH"
-        export CCACHE_DIR=$PWD/.ccache
-        ccache -M 5G
-        
-        COMPILE_OK=false
-        
-        # 尝试并行编译
-        if make -j$(nproc) V=sc BUILD_LOG=1 2>&1 | tee build.log; then
-          echo "✅ 并行编译成功"
-          COMPILE_OK=true
-        else
-          echo "::warning::并行编译失败，切换单线程..."
-          if make -j1 V=sc BUILD_LOG=1 2>&1 | tee -a build.log; then
-            echo "✅ 单线程编译成功"
-            COMPILE_OK=true
+          if [ "$FREE_GB" -lt 20 ]; then
+            echo "::warning::剩余 ${FREE_GB}GB < 20GB，尝试清理..."
+            sudo docker system prune -af --volumes 2>/dev/null || true
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
           fi
-        fi
-        
-        if [ "$COMPILE_OK" = "false" ]; then
-          echo "::error::编译失败"
-          mkdir -p error_logs
-          find logs -name "*.txt" -exec grep -l -i "error\|failed" {} \; 2>/dev/null | head -5 | xargs -I{} cp {} error_logs/
-          tail -100 build.log
-          exit 1
-        fi
-        
-        echo "status=success" >> $GITHUB_OUTPUT
-        ccache -s
 
-    # ═══════════════════════════════════════════════════════════
-    # 8️⃣ 整理产物
-    # ═══════════════════════════════════════════════════════════
-    - name: Organize Artifacts
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd openwrt
-        mkdir -p artifacts
-        
-        # 复制固件
-        find bin/targets -type f \( -name "*.bin" -o -name "*.ubi" -o -name "*.itb" \) -exec cp -v {} artifacts/ \;
-        
-        # 复制校验文件
-        find bin/targets \( -name "*.manifest" -o -name "sha256sums" \) -exec cp -v {} artifacts/ \;
-        
-        cp .config artifacts/build.config
-        
-        # 日志
-        [ -f build.log ] && gzip -c build.log > artifacts/build.log.gz
-        [ -d logs ] && tar -czf artifacts/build-logs.tar.gz logs/
+      # ═══════════════════════════════════════════════════════════
+      # 4️⃣ 缓存工具链
+      # ═══════════════════════════════════════════════════════════
+      - name: Cache OpenWrt Toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/host*
+            openwrt/build_dir/toolchain-*
+            openwrt/.ccache
+          key: ${{ runner.os }}-toolchain-${{ env.REPO_BRANCH }}-${{ env.OPENWRT_HASH }}-${{ hashFiles('repo/config/base.config') }}
+          restore-keys: |
+            ${{ runner.os }}-toolchain-${{ env.REPO_BRANCH }}-
+            ${{ runner.os }}-toolchain-
 
-    # ═══════════════════════════════════════════════════════════
-    # 9️⃣ 上传固件
-    # ═══════════════════════════════════════════════════════════
-    - name: Upload Firmware Artifacts
-      if: steps.compile.outputs.status == 'success'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.DEVICE_NAME }}-openwrt-${{ github.run_number }}
-        path: openwrt/artifacts/*
-        retention-days: 7
+      # ═══════════════════════════════════════════════════════════
+      # 5️⃣ 配置 OpenWrt
+      # ═══════════════════════════════════════════════════════════
+      - name: Configure OpenWrt
+        run: |
+          cd openwrt
+          
+          # A. 应用配置文件
+          CONFIG_FILE="${GITHUB_WORKSPACE}/repo/config/base.config"
+          [ ! -f "$CONFIG_FILE" ] && { echo "::error::配置文件不存在"; exit 1; }
+          cp -f "$CONFIG_FILE" .config
+          
+          # B. 覆盖 files 目录
+          if [ -d "${GITHUB_WORKSPACE}/repo/files" ]; then
+            rm -rf files 2>/dev/null || true
+            cp -r "${GITHUB_WORKSPACE}/repo/files" ./files
+            find files/etc/uci-defaults/ -type f -exec chmod +x {} \; 2>/dev/null || true
+          fi
+          
+          # C. 更新 Feeds (该 fork 包含额外的 NSS 驱动支持)
+          echo "=== 更新 feeds ==="
+          # 确保 passwall 等第三方包能正常安装
+          grep -q "passwall" feeds.conf.default || \
+            echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
+          
+          ./scripts/feeds update -f
+          ./scripts/feeds install -a
+          
+          # D. 生成最终配置
+          echo "=== 生成最终配置 ==="
+          make defconfig
+          
+          # E. 验证目标 (现在应该能成功找到 360V6)
+          if grep -q "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_qihoo_360v6=y" .config; then
+            echo "✅ 目标设备 360V6 已确认"
+          else
+            echo "::error::❌ 未找到目标设备配置！"
+            exit 1
+          fi
+
+      # ═══════════════════════════════════════════════════════════
+      # 6️⃣ 下载依赖
+      # ═══════════════════════════════════════════════════════════
+      - name: Download Dependencies
+        run: |
+          cd openwrt
+          echo "=== 开始下载依赖包 ==="
+          for i in 1 2 3; do
+            make download -j$(nproc) && break
+            echo "重试 $i..."
+            sleep 15
+          done
+          find dl -type f -size 0 -delete 2>/dev/null || true
+
+      # ═══════════════════════════════════════════════════════════
+      # 7️⃣ 编译固件
+      # ═══════════════════════════════════════════════════════════
+      - name: Compile Firmware
+        id: compile
+        run: |
+          cd openwrt
+          echo "=== 开始编译 ==="
+          export PATH="/usr/lib/ccache:$PATH"
+          export CCACHE_DIR=$PWD/.ccache
+          ccache -M 5G
+          
+          # 尝试并行编译，失败则单线程
+          if ! make -j$(nproc) V=sc; then
+            echo "::warning::并行编译失败，切换单线程..."
+            make -j1 V=sc
+          fi
+          
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      # ═══════════════════════════════════════════════════════════
+      # 8️⃣ 整理产物
+      # ═══════════════════════════════════════════════════════════
+      - name: Organize Artifacts
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd openwrt
+          mkdir -p artifacts
+          find bin/targets -type f \( -name "*.bin" -o -name "*.ubi" \) -exec cp -v {} artifacts/ \;
+          cp .config artifacts/build.config
+          
+      - name: Upload Firmware
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DEVICE_NAME }}-openwrt-${{ github.run_number }}
+          path: openwrt/artifacts/*
