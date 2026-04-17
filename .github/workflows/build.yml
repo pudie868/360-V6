@@ -1,5 +1,4 @@
 name: Build 360V6 OpenWrt
-
 on:
   workflow_dispatch:
   push:
@@ -14,17 +13,16 @@ permissions:
   contents: write
 
 env:
-  # ✅ 关键修改：切换到 VIKINGYFY 的 fork，包含 360V6 完整支持
   REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
-  # 该 fork 基于 ImmortalWrt，分支名通常为 master 或 openwrt-23.05，这里使用 master
-  REPO_BRANCH: master
+  # 修正：该仓库的 360V6 支持在 openwrt-23.05 分支
+  REPO_BRANCH: openwrt-23.05
   DEVICE_NAME: 360V6
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-
+     
     steps:
       # ═══════════════════════════════════════════════════════════
       # 1️⃣ 检出本仓库
