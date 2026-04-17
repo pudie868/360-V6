@@ -1,23 +1,53 @@
 #!/bin/sh
-# ZRAM Performance Tuning
+# ZRAM Performance Tuning for 360V6 (IPQ6018)
+LOG="/tmp/zram-tuning.log"
+exec >> "$LOG" 2>&1
+echo "=== ZRAM tuning start: $(date) ==="
 
-# 检查是否已启用
-[ -b /dev/zram0 ] || modprobe zram
-
-# 检查算法支持，优先 zstd
-ALGO="lz4"
-if grep -q "zstd" /sys/block/zram0/comp_algorithm 2>/dev/null; then
-    ALGO="zstd"
+# 1. 加载模块
+if [ ! -d /sys/block/zram0 ]; then
+    if ! modprobe zram num_devices=1; then
+        echo "Error: zram module load failed"
+        exit 1
+    fi
+    sleep 1
 fi
 
-echo "Setting ZRAM algorithm: $ALGO"
-echo $ALGO > /sys/block/zram0/comp_algorithm
+# 2. 幂等检查
+if swapon --show 2>/dev/null | grep -q zram0; then
+    echo "ZRAM already active, skipping"
+    exit 0
+fi
 
-# 设置容量为 512MB (适合 512MB RAM 设备)
-echo 512M > /sys/block/zram0/disksize
+# 3. 动态计算磁盘大小（物理内存的 50%，上限 512M）
+TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+ZRAM_MB=$(( TOTAL_MEM_KB / 1024 / 2 ))
+[ "$ZRAM_MB" -gt 512 ] && ZRAM_MB=512
+[ "$ZRAM_MB" -lt 64  ] && ZRAM_MB=64
+echo "Memory: ${TOTAL_MEM_KB}KB  ZRAM target: ${ZRAM_MB}MB"
 
-# 初始化并挂载
-mkswap /dev/zram0
-swapon /dev/zram0 -p 5
+# 4. 选择最佳压缩算法（优先 zstd > lz4 > lzo）
+ALGO="lzo"
+if [ -f /sys/block/zram0/comp_algorithm ]; then
+    AVAIL=$(cat /sys/block/zram0/comp_algorithm)
+    case "$AVAIL" in
+        *zstd*) ALGO="zstd" ;;
+        *lz4*)  ALGO="lz4"  ;;
+    esac
+fi
+echo "$ALGO" > /sys/block/zram0/comp_algorithm \
+    || { echo "Error: cannot set algorithm $ALGO"; exit 1; }
+echo "Algorithm: $ALGO"
 
+# 5. 设置大小
+echo "${ZRAM_MB}M" > /sys/block/zram0/disksize \
+    || { echo "Error: cannot set disksize"; exit 1; }
+
+# 6. 格式化 + 激活
+mkswap /dev/zram0 \
+    || { echo "Error: mkswap failed"; exit 1; }
+swapon /dev/zram0 -p 5 \
+    || { echo "Error: swapon failed"; exit 1; }
+
+echo "ZRAM enabled: ${ZRAM_MB}MB  algo=$ALGO"
 exit 0
