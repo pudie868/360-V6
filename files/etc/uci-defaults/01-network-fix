@@ -1,52 +1,35 @@
 #!/bin/sh
-# 360V6 DSA Network Port Mapping Fix v3
+# 360V6 DSA Network Port Mapping Fix
+
 LOG="/tmp/network_fix.log"
 exec >> "$LOG" 2>&1
 echo "=== Network fix start: $(date) ==="
 
-# 1. 等待 DSA 端口就绪（最多 30s）
+# 1. 等待 DSA 端口就绪
 READY=false
 for i in $(seq 1 30); do
     [ -d /sys/class/net/lan1 ] && { READY=true; break; }
     sleep 1
 done
 
-# 【修复】超时后明确报错，不再静默继续
 if [ "$READY" = "false" ]; then
-    echo "Warning: LAN ports not detected after 30s, applying default config"
+    echo "Warning: LAN ports not detected"
 fi
 
-# 2. 动态发现端口（同时兼容 lan1-4 和 eth0/eth1 命名）
+# 2. 动态发现端口
 LAN_PORTS=""
-WAN_PORT=""
-
 for p in lan1 lan2 lan3 lan4; do
-    [ -d "/sys/class/net/$p" ] && LAN_PORTS="$LAN_PORTS $p" && echo "LAN: $p"
+    [ -d "/sys/class/net/$p" ] && LAN_PORTS="$LAN_PORTS $p"
 done
+[ -z "$LAN_PORTS" ] && LAN_PORTS="lan1 lan2 lan3 lan4"
 
-# 兼容部分固件使用 eth 命名
-if [ -z "$LAN_PORTS" ]; then
-    for p in eth0 eth1 eth2 eth3; do
-        [ -d "/sys/class/net/$p" ] && LAN_PORTS="$LAN_PORTS $p" && echo "LAN(eth): $p"
-    done
-fi
-
-# WAN 端口
+WAN_PORT=""
 for p in wan eth4; do
-    if [ -d "/sys/class/net/$p" ]; then
-        WAN_PORT="$p"
-        echo "WAN: $p"
-        break
-    fi
+    [ -d "/sys/class/net/$p" ] && WAN_PORT="$p" && break
 done
+[ -z "$WAN_PORT" ] && WAN_PORT="wan"
 
-# 兜底默认值
-[ -z "$LAN_PORTS" ] && LAN_PORTS="lan1 lan2 lan3 lan4" && echo "Warning: using default LAN ports"
-[ -z "$WAN_PORT"  ] && WAN_PORT="wan"                   && echo "Warning: using default WAN port"
-
-# 3. 写入基础网络配置
-# 【修复】使用单独的 uci set/add_list 调用替代 heredoc，
-#         避免 uci batch 因缩进或换行符导致的解析失败
+# 3. 配置 Network
 uci -q batch << EOF
 delete network.device
 set network.device=device
@@ -62,39 +45,18 @@ set network.wan.proto=dhcp
 set network.wan.device=${WAN_PORT}
 EOF
 
-# 4. 批量添加 LAN 端口到网桥
 for p in $LAN_PORTS; do
     uci add_list network.device.ports="$p"
 done
 
-uci commit network || { echo "Error: uci commit network failed"; exit 1; }
-echo "network config committed: LAN=$LAN_PORTS  WAN=$WAN_PORT"
+uci commit network
+echo "network config committed"
 
-# 5. 修复防火墙 WAN 区域
-# 【修复】用 UCI 名称查找而非硬编码 @zone[1]
-WAN_ZONE_IDX=""
-i=0
-while uci -q get "firewall.@zone[$i]" > /dev/null 2>&1; do
-    NAME=$(uci -q get "firewall.@zone[$i].name" 2>/dev/null)
-    if [ "$NAME" = "wan" ]; then
-        WAN_ZONE_IDX=$i
-        break
-    fi
-    i=$((i + 1))
-done
+# 4. 配置 Firewall WAN Zone
+uci -q del_list firewall.@zone[1].network='wan'
+uci add_list firewall.@zone[1].network='wan'
+uci commit firewall
 
-if [ -n "$WAN_ZONE_IDX" ]; then
-    uci -q del_list "firewall.@zone[${WAN_ZONE_IDX}].network=wan" 2>/dev/null || true
-    uci add_list "firewall.@zone[${WAN_ZONE_IDX}].network=wan"
-    uci commit firewall || echo "Warning: uci commit firewall failed"
-    echo "firewall wan zone updated (index ${WAN_ZONE_IDX})"
-else
-    echo "Warning: wan firewall zone not found, skipping"
-fi
-
-# 6. 重载配置使其立即生效（非致命）
-# 【修复】原脚本缺少此步骤，导致配置仅在重启后生效
 /etc/init.d/network reload 2>/dev/null || true
-
-echo "=== Network fix done: $(date) ==="
+echo "=== Network fix done ==="
 exit 0
