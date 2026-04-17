@@ -77,37 +77,38 @@ jobs:
           echo "CONFIG_VERSION_REPO=\"${{ github.server_url }}/${{ github.repository }}\"" >> .config
 
       # 6️⃣ 更新和安装 Feeds (核心修复步骤)
+      # 6️⃣ 更新和安装 Feeds (解决 CMake 版本冲突)
       - name: Update & Install Feeds
         run: |
           cd openwrt
-          
-          # 【强制清理】防止旧缓存污染
+          # 【强制清理】
           rm -rf feeds tmp dl
           
-          # 【写入配置】使用 tee 命令，最稳妥的方案
-          # 注意：这里显式指定了 Luci 和 kiddin9 的正确地址
+          # 【写入配置】
+          # 1. Luci: 移除 ^openwrt-23.05 强制指定，让它跟随源码默认版本，解决 CMake 报错
+          # 2. kiddin9/passwall: 使用 GitHub 原生地址
           tee feeds.conf.default > /dev/null << 'EOF'
-          src-git packages https://git.openwrt.org/feed/packages.git
-          src-git luci https://git.openwrt.org/project/luci.git^openwrt-23.05
-          src-git routing https://git.openwrt.org/feed/routing.git
-          src-git telephony https://git.openwrt.org/feed/telephony.git
-          src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
-          src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git;main
-          EOF
-          
-          # 验证文件是否写入正确
+src-git packages https://git.openwrt.org/feed/packages.git;openwrt-23.05
+src-git luci https://git.openwrt.org/project/luci.git;openwrt-23.05
+src-git routing https://git.openwrt.org/feed/routing.git;openwrt-23.05
+src-git telephony https://git.openwrt.org/feed/telephony.git;openwrt-23.05
+src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
+src-git kiddin9 https://github.com/kiddin9/openwrt-packages.git;main
+EOF
+
+          # 验证配置
           echo "=== feeds.conf.default 内容 ==="
           cat feeds.conf.default
           echo "================================"
-          
+
           # 更新源（带重试）
           for i in 1 2 3; do
             ./scripts/feeds update -f && break
             echo "更新失败，重试中..."
             sleep 10
           done
-          
-          # 安装包
+
+          # 安装软件包
           ./scripts/feeds install -a
 
       # 7️⃣ 生成最终配置
